@@ -77,8 +77,12 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     if (++session.captures > MAX_CAPTURE_SEGMENTS) {
       throw new Error("The page is too long to capture safely.");
     }
-    showProgress(initial.regionIndex || 0, initial.regions?.length || 1,
-      requestedY / previousHeight, index + 1);
+    showProgress(
+      initial.regionIndex || 0,
+      initial.regions?.length || 1,
+      requestedY / previousHeight,
+      index + 1,
+    );
     // start already moved to the top. Every subsequent move contributes pixels.
     let settled =
       index === 0
@@ -120,10 +124,15 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       format: "png",
     });
     lastCaptureTime = Date.now();
-    const [activeAfterCapture] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+    const [activeAfterCapture] = await chrome.tabs.query({
+      active: true,
+      windowId: tab.windowId,
+    });
     if (activeAfterCapture?.id !== tab.id) {
       // A Side Panel stays open on tab switches. Never stitch another tab's pixels.
-      throw new Error("The active tab changed during capture. Keep the source tab active until capture finishes.");
+      throw new Error(
+        "The active tab changed during capture. Keep the source tab active until capture finishes.",
+      );
     }
     const after = await sendToPage(tab.id, { type: "fullPageCapture:measure" });
     showTextStats(after.textStats);
@@ -222,6 +231,7 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
 }
 
 async function captureFullPage(tab) {
+  if (isProtectedPageUrl(tab.url)) throw protectedPageError();
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     files: ["page-text.js", "content.js"],
@@ -236,18 +246,38 @@ async function captureFullPage(tab) {
     const panels = [];
     let pixels = 0;
     try {
-      for (let index = 0; index < Math.max(1, initial.regions?.length || 0); index++) {
-        const metrics = index === 0 ? initial : await sendToPage(tab.id, {
-          type: "fullPageCapture:select", index,
-        });
-        if (metrics.windowWidth !== initial.windowWidth || metrics.windowHeight !== initial.windowHeight ||
-            JSON.stringify(metrics.regions) !== JSON.stringify(initial.regions)) {
-          throw new Error("The application layout changed during capture. Please retry.");
+      for (
+        let index = 0;
+        index < Math.max(1, initial.regions?.length || 0);
+        index++
+      ) {
+        const metrics =
+          index === 0
+            ? initial
+            : await sendToPage(tab.id, {
+                type: "fullPageCapture:select",
+                index,
+              });
+        if (
+          metrics.windowWidth !== initial.windowWidth ||
+          metrics.windowHeight !== initial.windowHeight ||
+          JSON.stringify(metrics.regions) !== JSON.stringify(initial.regions)
+        ) {
+          throw new Error(
+            "The application layout changed during capture. Please retry.",
+          );
         }
         const canvas = await capturePass(tab, metrics, session);
-        panels.push({ canvas, crop: metrics.crop, background: initial.regions?.[index]?.background });
+        panels.push({
+          canvas,
+          crop: metrics.crop,
+          background: initial.regions?.[index]?.background,
+        });
         pixels += canvas.width * canvas.height;
-        if (pixels > MAX_CANVAS_PIXELS) throw new Error("The combined scrolling areas are too large to capture safely.");
+        if (pixels > MAX_CANVAS_PIXELS)
+          throw new Error(
+            "The combined scrolling areas are too large to capture safely.",
+          );
       }
       document.getElementById("statusTitle").textContent = "Finishing capture…";
       const resultCanvas = initial.regions?.length
@@ -255,11 +285,15 @@ async function captureFullPage(tab) {
         : panels[0].canvas;
       try {
         const result = resultCanvas.toDataURL("image/png");
-        if (!result.startsWith("data:image/png")) throw new Error("Chrome could not encode a PNG of this size.");
-        const pageText = await sendToPage(tab.id, { type: "fullPageCapture:text" });
+        if (!result.startsWith("data:image/png"))
+          throw new Error("Chrome could not encode a PNG of this size.");
+        const pageText = await sendToPage(tab.id, {
+          type: "fullPageCapture:text",
+        });
         return { screenshot: result, ...pageText };
       } finally {
-        if (resultCanvas !== panels[0].canvas) resultCanvas.width = resultCanvas.height = 0;
+        if (resultCanvas !== panels[0].canvas)
+          resultCanvas.width = resultCanvas.height = 0;
       }
     } finally {
       // Drop the viewport image before restoring the page.
@@ -278,33 +312,73 @@ let progressValue = 0;
 
 function showTextStats(stats) {
   if (!stats) return;
-  const format = (value) => value >= 1000 ? `${(value / 1000).toFixed(1)}K` : String(value);
-  document.getElementById("textTokens").textContent = `~${format(stats.estimatedTokens)} tokens`;
-  document.getElementById("textCharacters").textContent = `${format(stats.characters)} chars${stats.truncated ? " · Text limit reached" : ""}`;
+  const format = (value) =>
+    value >= 1000 ? `${(value / 1000).toFixed(1)}K` : String(value);
+  document.getElementById("textTokens").textContent =
+    `~${format(stats.estimatedTokens)} tokens`;
+  document.getElementById("textCharacters").textContent =
+    `${format(stats.characters)} chars${stats.truncated ? " · Text limit reached" : ""}`;
 }
 
 function showProgress(region, total, fraction, section) {
-  progressValue = Math.max(progressValue, Math.min(95, Math.round((region + fraction) / total * 95)));
-  document.getElementById("statusTitle").textContent = total > 1
-    ? `Capturing area ${region + 1} of ${total}` : "Capturing…";
-  document.getElementById("statusDetail").textContent = `Section ${section} · Keep the source tab active until capture finishes.`;
+  progressValue = Math.max(
+    progressValue,
+    Math.min(95, Math.round(((region + fraction) / total) * 95)),
+  );
+  document.getElementById("statusTitle").textContent =
+    total > 1 ? `Capturing area ${region + 1} of ${total}` : "Capturing…";
+  document.getElementById("statusDetail").textContent =
+    `Section ${section} · Keep the source tab active until capture finishes.`;
   document.getElementById("progressFill").style.width = `${progressValue}%`;
-  document.getElementById("captureProgress").setAttribute("aria-valuenow", progressValue);
+  document
+    .getElementById("captureProgress")
+    .setAttribute("aria-valuenow", progressValue);
 }
 
 function setStatus(state, title, detail) {
   document.body.dataset.state = state;
   document.getElementById("statusTitle").textContent = title;
   document.getElementById("statusDetail").textContent = detail;
-  document.getElementById("statusGlyph").setAttribute("d",
-    state === "error" ? "M10 4v7m0 4v.1" : "M5 10l3 3 7-7");
+  document
+    .getElementById("statusGlyph")
+    .setAttribute("d", state === "error" ? "M10 4v7m0 4v.1" : "M5 10l3 3 7-7");
+}
+
+// Chrome only refuses scrolling access to its own pages, extension pages and the Web
+// Store. Every other page is capturable, so a failed tab lookup, script injection or
+// permission check must never be reported as a protected page.
+const PROTECTED_PAGE_URL =
+  /^(?:chrome|chrome-extension|chrome-untrusted|devtools|edge|brave|opera|about|view-source):/i;
+const WEB_STORE_URL =
+  /^https:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore)/i;
+const PROTECTED_PAGE_MESSAGE =
+  "Open a regular webpage, then try again. Chrome protects this page from scrolling access.";
+
+function isProtectedPageUrl(url) {
+  return (
+    typeof url === "string" &&
+    (PROTECTED_PAGE_URL.test(url) || WEB_STORE_URL.test(url))
+  );
+}
+
+function protectedPageError() {
+  const error = new Error(PROTECTED_PAGE_MESSAGE);
+  error.protectedPage = true;
+  return error;
 }
 
 function friendlyError(error) {
-  if (/Cannot access|cannot be scripted|extensions gallery/i.test(error.message)) {
-    return "Open a regular webpage, then try again. Chrome protects this page from scrolling access.";
-  }
-  return error.message || "Something interrupted the capture. Please try again.";
+  const message = String(error?.message ?? error ?? "");
+  if (
+    error?.protectedPage ||
+    /chrome:\/\/|chrome-extension:\/\/|extensions gallery|webstore/i.test(
+      message,
+    )
+  )
+    return PROTECTED_PAGE_MESSAGE;
+  if (/cannot access|cannot be scripted|permission/i.test(message))
+    return "Chrome blocked access to this page’s content, so nothing was captured.";
+  return message || "Something interrupted the capture. Please try again.";
 }
 
 preview.addEventListener("load", () => {
@@ -313,9 +387,14 @@ preview.addEventListener("load", () => {
 });
 
 document.getElementById("zoomPreview").addEventListener("click", (event) => {
-  const actual = document.getElementById("previewViewport").classList.toggle("actual-size");
+  const actual = document
+    .getElementById("previewViewport")
+    .classList.toggle("actual-size");
   event.currentTarget.setAttribute("aria-pressed", String(actual));
-  event.currentTarget.setAttribute("aria-label", actual ? "Fit screenshot to preview" : "Show screenshot at actual size");
+  event.currentTarget.setAttribute(
+    "aria-label",
+    actual ? "Fit screenshot to preview" : "Show screenshot at actual size",
+  );
   event.currentTarget.textContent = actual ? "Fit" : "100%";
 });
 
@@ -330,17 +409,24 @@ async function startPopupCapture(sourceTab) {
   document.getElementById("captureProgress").setAttribute("aria-valuenow", "0");
   document.getElementById("pageText").hidden = false;
   document.getElementById("pageText").open = false;
-  document.getElementById("textPreview").textContent = "Collecting rendered page text…";
+  document.getElementById("textPreview").textContent =
+    "Collecting rendered page text…";
   showTextStats({ characters: 0, estimatedTokens: 0 });
-  setStatus("capturing", "Capturing…", "Keep the source tab active until capture finishes.");
+  setStatus(
+    "capturing",
+    "Capturing…",
+    "Keep the source tab active until capture finishes.",
+  );
   try {
     const tab = await sourceTab;
-    if (!tab?.id) throw new Error("No active tab was found.");
+    if (!tab?.id)
+      throw new Error("The tab to capture could not be identified.");
     const result = await captureFullPage(tab);
     capturedPage = result;
     preview.src = result.screenshot;
     showTextStats(result);
-    document.getElementById("textPreview").textContent = result.text || "No rendered page text was found.";
+    document.getElementById("textPreview").textContent =
+      result.text || "No rendered page text was found.";
     document.getElementById("emptyState").hidden = true;
     for (const id of ["previewToolbar", "previewViewport", "imageMeta"]) {
       document.getElementById(id).hidden = false;
@@ -356,12 +442,18 @@ async function startPopupCapture(sourceTab) {
     await destinationUI.show(result);
   } catch (error) {
     console.error(error);
-    document.querySelector("#emptyState h2").textContent = "Preview unavailable";
-    setStatus("error", "Couldn’t capture this page", `${friendlyError(error)} Close the Side Panel, then reopen it using the extension toolbar icon to retry.`);
+    document.querySelector("#emptyState h2").textContent =
+      "Preview unavailable";
+    setStatus(
+      "error",
+      "Couldn’t capture this page",
+      `${friendlyError(error)} Close the Side Panel, then reopen it using the extension toolbar icon to retry.`,
+    );
     document.getElementById("pageText").hidden = !capturedPage;
     if (capturedPage) {
       showTextStats(capturedPage);
-      document.getElementById("textPreview").textContent = capturedPage.text || "No rendered page text was found.";
+      document.getElementById("textPreview").textContent =
+        capturedPage.text || "No rendered page text was found.";
       destinationUI.resume();
     }
   } finally {

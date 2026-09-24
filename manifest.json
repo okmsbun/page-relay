@@ -19,21 +19,20 @@
         "48": "assets/icons/icon-48.png",
         "128": "assets/icons/icon-128.png"
     },
-    "side_panel": { "default_path": "sidepanel.html" },
-    "background": { "service_worker": "service-worker.js" },
+    "side_panel": {
+        "default_path": "sidepanel.html"
+    },
+    "background": {
+        "service_worker": "service-worker.js"
+    },
     "host_permissions": [
-        "https://chatgpt.com/*",
-        "https://chat.openai.com/*",
-        "https://claude.ai/*",
-        "https://gemini.google.com/*",
-        "https://chat.deepseek.com/*",
-        "https://www.deepseek.com/*",
-        "https://deepseek.com/*",
-        "https://copilot.microsoft.com/*"
+        "<all_urls>"
     ],
     "permissions": [
         "activeTab",
         "scripting",
-        "sidePanel"
+        "sidePanel",
+        "storage",
+        "tabs"
     ]
 }

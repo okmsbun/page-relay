@@ -5,22 +5,37 @@ tab, or website overlay. `content.js`, `page-text.js`, `capture-layout.js`, and
 the capture pipeline in `popup.js` have no provider-specific behavior.
 
 `manifest.json` declares the global `side_panel.default_path` as `sidepanel.html`
-and removes `action.default_popup`. The small service worker sets
-`openPanelOnActionClick: true`; it does not create per-tab panels or capture data.
-This uses Chrome's [global Side Panel API](https://developer.chrome.com/docs/extensions/reference/api/sidePanel).
-Only the `sidePanel` permission was added, with Chrome 116+ required.
+and removes `action.default_popup`. The service worker opens the panel from
+`chrome.action.onClicked`, so Chrome still reports the clicked tab; it does not
+create per-tab panels or capture data. This uses Chrome's
+[global Side Panel API](https://developer.chrome.com/docs/extensions/reference/api/sidePanel).
 
-Open the panel using the extension toolbar icon to grant `activeTab` and start
-one automatic capture. `sidepanel-session.js` pins the active source in the
-panel's own window once. The same panel document remains open across tab switches
-and navigation; its screenshot, text, selections, Busy and send results remain
-in memory. Neither switching browser/provider tabs nor sending recaptures a page.
-Keep the source tab active and avoid resizing the panel until capture finishes;
-`captureVisibleTab` cannot capture a background tab. After capture, browse freely.
-Closing/recreating the panel starts a fresh session; captures are not saved to
-disk or restored across browser restarts. There are no recapture buttons.
-The existing `popup.js`/`popup.css` filenames are retained for the reused capture
-and presentation code, not a popup entry point.
+Host access is declared for the capturable web (`<all_urls>`) and the source tab
+is identified with `tabs`. A Side Panel cannot borrow `activeTab` from the
+toolbar click: `sidePanel.setPanelBehavior({ openPanelOnActionClick: true })`
+consumes that click, so no action event and no user gesture ever reaches the
+extension, and the automatic capture on a normal HTTPS page fails. The panel is
+therefore opened from `chrome.action.onClicked`, which also hands the extension
+the tab the user was on.
+
+Open the panel using the extension toolbar icon to start one automatic capture.
+`service-worker.js` pins that clicked tab in `chrome.storage.session`, and
+`sidepanel-session.js` resolves the source exactly once when the panel document
+opens: the pinned tab when the click is recent, otherwise the active tab of the
+panel's own window. The resolved source is frozen and reused, so switching tabs
+afterwards never replaces or restarts it. The panel's own `chrome-extension://`
+document can never be the source; an unusable lookup is reported as a lookup
+failure, never as a page Chrome protects. The same panel document remains open
+across tab switches and navigation; its screenshot, text, selections, Busy and
+send results remain in memory. Keep the source tab active and avoid resizing the
+panel until capture finishes; `captureVisibleTab` cannot capture a background tab.
+After capture, browse freely. Closing/recreating the panel starts a fresh session;
+captures are not saved to disk or restored across browser restarts. There are no
+recapture buttons. The existing `popup.js`/`popup.css` filenames are retained for
+the reused capture and presentation code, not a popup entry point.
+
+Only `sidePanel`, `storage` and `tabs` were added to the MV3 permissions during
+this migration; `activeTab` and `scripting` are unchanged.
 
 ### Icons
 
@@ -43,21 +58,23 @@ symbol fallback; no third-party favicon service or extra permission is used.
 
 ## Current capability
 
-| Provider | Recognized chat routes | Sending |
-| --- | --- | --- |
-| ChatGPT | New chats, `/c/…`, custom GPT conversations | Enabled; existing user-confirmed adapter, regression fixtures |
-| Claude | `/new`, `/chat/…` | Enabled; live PNG + TXT send, draft/attachment protection and persisted outgoing turn verified |
-| Gemini | `/app`, `/app/…`, account-prefixed `/u/N/app/…` | Enabled; live PNG + TXT send, draft/attachment protection and persisted outgoing turn verified |
-| DeepSeek | `chat.deepseek.com/`, `/a/chat/s/…` | Discovery only: composer/file control inspected; full attachment/draft/delivery flow unverified |
-| Microsoft Copilot | `/`, `/chats/…` | Discovery only: verification reached account authorization consent |
+| Provider          | Recognized chat routes                          | Sending                                                                                         |
+| ----------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| ChatGPT           | New chats, `/c/…`, custom GPT conversations     | Enabled; existing user-confirmed adapter, regression fixtures                                   |
+| Claude            | `/new`, `/chat/…`                               | Enabled; live PNG + TXT send, draft/attachment protection and persisted outgoing turn verified  |
+| Gemini            | `/app`, `/app/…`, account-prefixed `/u/N/app/…` | Enabled; live PNG + TXT send, draft/attachment protection and persisted outgoing turn verified  |
+| DeepSeek          | `chat.deepseek.com/`, `/a/chat/s/…`             | Discovery only: composer/file control inspected; full attachment/draft/delivery flow unverified |
+| Microsoft Copilot | `/`, `/chats/…`                                 | Discovery only: verification reached account authorization consent                              |
 
 These are limitations of the extension's current implementation and verification,
 not proven limitations of the services. **Discovery only** must not be confused
 with **Unsupported** (a demonstrated capability mismatch). ChatGPT, Claude and
 Gemini have enabled senders. DeepSeek and Copilot have no sending adapter;
 their discovery remains available on recognized chat routes, not login routes.
-These five are the entire registry. Other providers and their host permissions
-and UI icons have been removed, not merely hidden.
+These five are the entire registry. Other providers and their UI icons have been
+removed, not merely hidden. Host access is no longer narrowed to the registry:
+the Side Panel must script the arbitrary page the user is capturing, which
+`activeTab` cannot grant from inside a panel.
 
 Provider tabs are derived from the latest matching open conversations, never
 from the whole registry. Refresh adds new providers, removes closed providers,
@@ -199,11 +216,20 @@ Fixtures prove queue/UI behavior and adapter state transitions; they are not
 authenticated provider end-to-end tests. No real messages are sent by these tests.
 
 1. Reload **Page capture** at `chrome://extensions`; review the Side Panel
-   permission and final extension icon. Pin the extension, open a nonsensitive
-   source page, and click the toolbar icon. The UI must open inside Chrome's
-   native Side Panel, not a popup or new tab. Keep the source active until capture
-   finishes, then switch/navigate tabs: preview, text, selections and results
-   should remain unchanged. Resize the panel after capture to check its layout.
+   permissions (`activeTab`, `scripting`, `sidePanel`, `storage`, `tabs`), host
+   access (`<all_urls>`) and the final extension icon. Pin the extension, then
+   check capture-source handling on real pages:
+   - a normal HTTPS page (for example GitHub) → toolbar icon → the panel must
+     capture the page, not report a protected page;
+   - Google AdMob → toolbar icon → capture must work for that page too;
+   - `chrome://extensions` → toolbar icon → the protected-page message must still
+     appear (this is the only case that may show it);
+   - after a successful capture, switch between the source page, an AI tab and
+     back: preview, text, selections and results must remain unchanged, and the
+     status must never fall back to the protected-page message.
+     The UI must open inside Chrome's native Side Panel, not a popup or new tab.
+     Keep the source active until capture finishes, then navigate tabs. Resize the
+     panel after capture to check its layout.
 2. Open disposable ChatGPT, Claude and Gemini conversations, including an empty
    new chat. Open the panel on a nonsensitive source page, let capture finish,
    select those destinations across provider tabs, then Send.
