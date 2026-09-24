@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Popup state checks</title>
+<style>body { margin: 0; } iframe { display: block; border: 0; width: 380px; height: 600px; }</style>
+<iframe id="popup" src="../popup.html" title="Popup under test"></iframe>
+<pre id="result" hidden>RUNNING</pre>
+<script>
+document.getElementById("popup").addEventListener("load", async (event) => {
+  if (location.search.includes("theme=light")) event.target.style.colorScheme = "light";
+  const win = event.target.contentWindow;
+  const doc = win.document;
+  const checks = [];
+  const assert = (ok, label) => { if (!ok) throw new Error(label); checks.push(label); };
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  try {
+    assert(!doc.getElementById("emptyState").hidden, "empty state visible");
+    assert(doc.getElementById("previewViewport").hidden, "empty preview hidden");
+    assert(!doc.getElementById("takeScreenshot").disabled, "capture action available");
+    if (location.search !== "?state=idle") {
+      win.chrome = win.chrome || {};
+      win.chrome.tabs = { query: async () => [{ id: 1, windowId: 2 }] };
+      const image = document.createElement("canvas");
+      image.width = 960; image.height = 2600;
+      const ctx = image.getContext("2d");
+      ctx.fillStyle = "#f5f6fa"; ctx.fillRect(0, 0, 960, 2600);
+      ctx.fillStyle = "#242a3b"; ctx.fillRect(0, 0, 960, 150);
+      ctx.fillStyle = "white"; ctx.font = "bold 32px system-ui"; ctx.fillText("A complete view", 35, 90);
+      ctx.fillStyle = "#e1e5f1"; ctx.fillRect(0, 150, 210, 2450);
+      for (let y = 220; y < 2500; y += 140) {
+        ctx.fillStyle = "#a2acc6"; ctx.fillRect(35, y, 120, 12);
+        ctx.fillStyle = "white"; ctx.fillRect(250, y - 20, 650, 100);
+        ctx.fillStyle = "#d1d8e8"; ctx.fillRect(280, y, 420, 14);
+      }
+      const png = image.toDataURL();
+      win.captureFullPage = async () => {
+        win.showProgress(0, 2, 0.5, 2);
+        await wait(100);
+        return png;
+      };
+      doc.getElementById("takeScreenshot").click();
+      await wait(10);
+      assert(doc.body.dataset.state === "capturing", "loading state announced");
+      assert(doc.getElementById("takeScreenshot").disabled, "duplicate captures disabled");
+      assert(!doc.getElementById("captureProgress").hidden, "progress visible");
+      await wait(200);
+      assert(doc.body.dataset.state === "success", "success state visible");
+      assert(doc.getElementById("emptyState").hidden && !doc.getElementById("previewViewport").hidden, "preview replaces empty state");
+      assert(doc.getElementById("imageMeta").textContent.includes("960"), "image dimensions displayed");
+      doc.getElementById("zoomPreview").click();
+      assert(doc.getElementById("previewViewport").classList.contains("actual-size"), "actual-size preview works");
+      doc.getElementById("zoomPreview").click();
+      win.captureFullPage = async () => { throw new Error("Cannot access a chrome:// URL"); };
+      doc.getElementById("takeScreenshot").click();
+      await wait(100);
+      assert(doc.body.dataset.state === "error", "inline error state visible");
+      assert(doc.getElementById("statusDetail").textContent.includes("regular webpage"), "protected-page error is actionable");
+      assert(doc.getElementById("preview").src === png, "failed retry preserves previous screenshot");
+      assert(!doc.getElementById("takeScreenshot").disabled, "retry action available");
+      if (location.search !== "?state=error") {
+        win.setStatus("success", "Your screenshot is ready", "Scroll to explore. Everything stays on your device.");
+        doc.getElementById("buttonLabel").textContent = "Capture again";
+      }
+    }
+    document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
+  } catch (error) {
+    document.getElementById("result").textContent = "FAIL " + error.message + " " + JSON.stringify(checks);
+  }
+});
+</script>

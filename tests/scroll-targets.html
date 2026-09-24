@@ -1,0 +1,186 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Full-page capture: internal scroller fixture</title>
+<style>
+  html,
+  body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    font: 16px system-ui;
+  }
+
+  #shell {
+    position: fixed;
+    inset: 0;
+  }
+
+  #toolbar {
+    height: 60px;
+    background: #223;
+    color: white;
+  }
+
+  #sidebar {
+    position: absolute;
+    top: 60px;
+    bottom: 24px;
+    width: 180px;
+    overflow: auto;
+    background: #ddd;
+  }
+
+  #sidebar>div {
+    height: 2500px;
+  }
+
+  #main {
+    position: absolute;
+    left: 200px;
+    right: 20px;
+    top: 70px;
+    bottom: 24px;
+    border: 6px solid #467;
+    overflow: auto;
+    scroll-behavior: smooth;
+  }
+
+  #sticky {
+    position: sticky;
+    top: 0;
+    height: 43px;
+    background: #fc6;
+  }
+
+  #rows {
+    height: 2173px;
+    background: repeating-linear-gradient(#def 0 99px, #456 99px 100px);
+  }
+
+  #badge {
+    position: fixed;
+    right: 40px;
+    bottom: 40px;
+    background: #f88;
+  }
+
+  #result {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: white;
+    white-space: pre-wrap;
+  }
+</style>
+<div id="shell">
+  <div id="toolbar">Fixed app shell — toolbar and both scrolling areas should appear once</div>
+  <aside id="sidebar">
+    <div>Separate scrolling sidebar</div>
+  </aside>
+  <main id="main">
+    <header id="sticky">Sticky header — should appear once</header>
+    <div id="rows">Main content: scroll to trigger delayed content growth</div>
+    <footer>END — should appear once at the bottom</footer>
+    <div id="badge">Fixed overlay — hidden during capture</div>
+  </main>
+</div>
+<script>
+  const main = document.getElementById("main");
+  let appended = false;
+  main.addEventListener("scroll", () => {
+    if (main.scrollTop < 400 || appended) return;
+    appended = true;
+    setTimeout(() => document.getElementById("rows").style.height = "2673px", 200);
+  });
+
+  // Open normally for a manual screenshot, or add ?verify for content-script checks.
+  if (location.search === "?verify") (async () => {
+    // Headless virtual time may defer compositor scroll events. Keep the real
+    // layout/scrollTo, but trigger our fixture's loader deterministically.
+    main.scrollTo = function (options) {
+      Element.prototype.scrollTo.call(this, options);
+      this.dispatchEvent(new Event("scroll"));
+    };
+    let listener, connect, disconnect;
+    const checks = [];
+    const assert = (ok, label) => {
+      if (!ok) throw new Error(label);
+      checks.push(label);
+    };
+    window.chrome = window.chrome || {};
+    chrome.runtime = {
+      onMessage: { addListener(fn) { listener = fn; } },
+      onConnect: { addListener(fn) { connect = fn; } },
+    };
+    const send = (action, extra = {}) => new Promise((resolve, reject) => {
+      listener({ type: "fullPageCapture:" + action, ...extra }, {}, (reply) => {
+        reply.ok ? resolve(reply.result) : reject(new Error(reply.error));
+      });
+    });
+    try {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "../content.js";
+        script.onload = resolve;
+        script.onerror = reject;
+        document.head.append(script);
+      });
+      main.scrollTo({ top: 123, behavior: "instant" });
+      const sidebar = document.getElementById("sidebar");
+      sidebar.scrollTop = 88;
+      const originalY = main.scrollTop;
+      const initial = await send("start");
+      assert(initial.regions.length === 2, "includes independent navigation and main panels");
+      assert(sidebar.scrollTop === 0, "starts sidebar at its first row");
+      assert(initial.documentHeight === main.scrollHeight, "selects main content rather than document/sidebar");
+      assert(initial.viewportHeight === main.clientHeight, "measures internal scrollport height");
+      assert(initial.crop.x === main.getBoundingClientRect().left + main.clientLeft, "excludes left border");
+      assert(initial.crop.y === main.getBoundingClientRect().top + main.clientTop, "excludes top border");
+      assert(initial.crop.width === main.clientWidth, "excludes border and scrollbar from crop");
+      assert(getComputedStyle(document.getElementById("shell")).opacity === "1", "fixed shell remains visible");
+      assert(getComputedStyle(document.getElementById("badge")).opacity === "0", "fixed overlay is hidden");
+      const next = await send("scroll", { scrollY: 450 });
+      assert(next.scrollY === 450 && window.scrollY === 0, "scrolls the element, not the browser page");
+      assert(next.documentHeight === initial.documentHeight + 500,
+        `waits for lazy content growth during capture scroll (${initial.documentHeight} -> ${next.documentHeight}, triggered=${appended})`);
+      assert(document.getElementById("sticky").getBoundingClientRect().bottom < initial.crop.y, "sticky header scrolls away");
+      const side = await send("select", { index: 1 });
+      assert(side.documentHeight === sidebar.scrollHeight, "selects sidebar for its own capture pass");
+      await send("scroll", { scrollY: 700 });
+      assert(sidebar.scrollTop === 700 && main.scrollTop === 450, "independent pass does not rewind main content");
+      await send("restore");
+      assert(main.scrollTop === originalY && sidebar.scrollTop === 88, "restores selected scroller without changing sidebar");
+      assert(getComputedStyle(document.getElementById("sticky")).position === "sticky", "restores sticky positioning");
+      assert(getComputedStyle(document.getElementById("badge")).opacity === "1", "restores fixed overlay");
+      connect({ name: "fullPageCapture", onDisconnect: { addListener(fn) { disconnect = fn; } } });
+      await send("start");
+      await send("scroll", { scrollY: 600 });
+      disconnect();
+      assert(main.scrollTop === originalY, "popup disconnect restores internal scroll position");
+
+      // Switch the same content to normal document flow to verify the fallback.
+      document.documentElement.style.cssText = "height: auto; overflow: visible";
+      document.body.style.cssText = "height: auto; overflow: visible";
+      document.getElementById("shell").style.position = "static";
+      sidebar.style.display = "none";
+      main.style.cssText = "position: static; overflow: visible; height: auto";
+      window.scrollTo(0, 177);
+      const normal = await send("start");
+      assert(normal.crop.x === 0 && normal.crop.y === 0 && normal.crop.height === innerHeight,
+        "normal long document uses full browser viewport");
+      await send("scroll", { scrollY: 800 });
+      assert(window.scrollY === 800, "normal document still scrolls");
+      await send("restore");
+      assert(window.scrollY === 177, "normal document position restored");
+      const result = document.createElement("pre");
+      result.id = "result";
+      result.textContent = "PASS " + JSON.stringify(checks);
+      document.body.append(result);
+    } catch (error) {
+      const result = document.createElement("pre");
+      result.id = "result";
+      result.textContent = "FAIL " + error.message + " " + JSON.stringify(checks);
+      document.body.append(result);
+    }
+  })();
+</script>
