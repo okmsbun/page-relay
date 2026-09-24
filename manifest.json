@@ -1,0 +1,13 @@
+{
+    "manifest_version": 3,
+    "name": "Screenshot to ChatGPT",
+    "version": "0.1.0",
+    "description": "Send the current page screenshot to ChatGPT.",
+    "action": {
+        "default_title": "Screenshot to ChatGPT",
+        "default_popup": "popup.html"
+    },
+    "permissions": [
+        "activeTab"
+    ]
+}
