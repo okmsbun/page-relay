@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ChatGPT send verification regression tests</title>
+<div id="fixture"></div>
+<pre id="result" hidden>RUNNING</pre>
+<script src="../chatgpt-adapter.js"></script>
+<script>
+(async () => {
+  const checks = [];
+  const assert = (condition, label) => { if (!condition) throw new Error(label); checks.push(label); };
+  const fixture = document.getElementById("fixture");
+  async function run(mode) {
+    fixture.innerHTML = `<form><div id="prompt-textarea" contenteditable="true" style="min-height:40px"></div>
+      <input type="file" multiple><div id="attachments"></div><button data-testid="send-button" type="button">Send</button></form>
+      <div id="messages"></div>`;
+    const payload = { expectedUrl: `${location.origin}${location.pathname}${location.search}`, deliveryId: mode,
+      screenshot: "data:image/png;base64,aGVsbG8=", text: "Unchanged extracted text",
+      prompt: `Captured page context [${mode}]\nPage title\nSee attachments.`, png: `${mode}.png`, txt: `${mode}.txt` };
+    let clicks = 0;
+    const editor = () => document.getElementById("prompt-textarea");
+    const attachments = document.getElementById("attachments");
+    function outgoing(withFiles = true) {
+      const turn = document.createElement("article");
+      turn.dataset.testid = "conversation-turn-1";
+      const message = document.createElement("div");
+      message.dataset.messageAuthorRole = "user";
+      message.textContent = payload.prompt;
+      turn.append(message);
+      if (withFiles) turn.append(attachments.cloneNode(true));
+      document.getElementById("messages").append(turn);
+      editor().textContent = "";
+    }
+    document.querySelector('input[type="file"]').addEventListener("change", () => {
+      attachments.textContent = `${payload.png} ${payload.txt}`;
+      if (mode === "sync-replacement") editor().replaceWith(editor().cloneNode(true));
+      setTimeout(() => {
+        if (mode === "replacement") editor().replaceWith(editor().cloneNode(true));
+        if (mode === "formatting") editor().textContent = payload.prompt.replaceAll(" ", "\u00a0").replaceAll("\n", "\n\n") + "\u200b";
+        if (mode === "early-send" || mode === "early-partial") outgoing(mode === "early-send");
+        if (mode === "delayed-files") {
+          outgoing(false);
+          setTimeout(() => document.querySelector('[data-testid="conversation-turn-1"]').append(attachments.cloneNode(true)), 700);
+        }
+        if (mode === "route-change") {
+          history.replaceState(null, "", "?new-conversation");
+          outgoing();
+        }
+        if (mode === "delayed-turn") {
+          editor().textContent = "";
+          setTimeout(outgoing, 700);
+        }
+        if (mode === "user-edit") {
+          editor().focus();
+          document.execCommand("insertText", false, "Changed by user");
+        }
+        if (mode === "missing-file") attachments.textContent = payload.png;
+      }, 0);
+    });
+    document.querySelector('[data-testid="send-button"]').addEventListener("click", () => {
+      clicks++;
+      editor().textContent = "";
+      if (mode !== "unconfirmed") {
+        setTimeout(() => { outgoing(); editor().replaceWith(editor().cloneNode(true)); }, 200);
+      }
+    });
+    const result = await submitCaptureToComposer(payload);
+    if (mode === "route-change") history.replaceState(null, "", payload.expectedUrl);
+    return { result, clicks };
+  }
+  try {
+    if (location.search === "?unconfirmed") {
+      const { result, clicks } = await run("unconfirmed");
+      assert(!result.sent && result.needsReview && clicks === 1, "unconfirmed send remains review and is never clicked twice");
+    } else {
+      for (const mode of ["sync-replacement", "replacement", "formatting"]) {
+        const { result, clicks } = await run(mode);
+        assert(result.sent && clicks === 1, `${mode}: harmless editor changes still confirm exactly one send`);
+      }
+      for (const mode of ["early-send", "delayed-turn", "delayed-files", "route-change"]) {
+        const { result, clicks } = await run(mode);
+        assert(result.sent && clicks === 0, `${mode}: matching outgoing turn and both files confirm success without another click`);
+      }
+      const partial = await run("early-partial");
+      assert(!partial.result.sent && partial.result.needsReview && partial.clicks === 0, "outgoing text alone cannot prove full-context delivery");
+      const edited = await run("user-edit");
+      assert(!edited.result.sent && edited.result.needsReview && edited.clicks === 0, "real editor input during upload is protected and not sent");
+    }
+    document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
+  } catch (error) {
+    document.getElementById("result").textContent = "FAIL " + error.message + " " + JSON.stringify(checks);
+  }
+})();
+</script>

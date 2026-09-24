@@ -1,12 +1,24 @@
 {
     "manifest_version": 3,
-    "name": "Screenshot to ChatGPT",
+    "name": "Page capture",
     "version": "0.1.0",
-    "description": "Send the current page screenshot to ChatGPT.",
+    "description": "Capture a page screenshot and text, then choose an AI conversation.",
     "action": {
-        "default_title": "Screenshot to ChatGPT",
+        "default_title": "Page capture",
         "default_popup": "popup.html"
     },
+    "host_permissions": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*",
+        "https://chat.deepseek.com/*",
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*",
+        "https://copilot.microsoft.com/*",
+        "https://grok.com/*",
+        "https://chat.mistral.ai/*"
+    ],
     "permissions": [
         "activeTab",
         "scripting"

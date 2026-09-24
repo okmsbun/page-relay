@@ -18,7 +18,17 @@ document.getElementById("popup").addEventListener("load", async (event) => {
     assert(!doc.getElementById("takeScreenshot").disabled, "capture action available");
     if (location.search !== "?state=idle") {
       win.chrome = win.chrome || {};
-      win.chrome.tabs = { query: async () => [{ id: 1, windowId: 2 }] };
+      const chats = [
+        { id: 10, windowId: 2, index: 1, title: "Extension debugging", url: "https://chatgpt.com/c/one", status: "complete", incognito: false },
+        { id: 11, windowId: 3, index: 0, title: "Extension debugging", url: "https://chatgpt.com/c/two", status: "complete", incognito: false },
+        { id: 12, windowId: 4, index: 0, title: "Private discussion", url: "https://chatgpt.com/c/three", status: "complete", incognito: true },
+        { id: 13, windowId: 3, index: 2, title: "Claude discussion", url: "https://claude.ai/chat/four", status: "complete", incognito: false },
+        { id: 14, windowId: 4, index: 2, title: "Gemini discussion", url: "https://gemini.google.com/app/five", status: "complete", incognito: true },
+      ];
+      win.chrome.tabs = { query: async (options) => options.url ? chats : [{ id: 1, windowId: 2 }],
+        get: async (id) => chats.find((tab) => tab.id === id) };
+      win.chrome.windows = { getCurrent: async () => ({ id: 2 }) };
+      win.chrome.extension = { isAllowedIncognitoAccess: async () => true };
       const image = document.createElement("canvas");
       image.width = 960; image.height = 2600;
       const ctx = image.getContext("2d");
@@ -34,19 +44,57 @@ document.getElementById("popup").addEventListener("load", async (event) => {
       const png = image.toDataURL();
       win.captureFullPage = async () => {
         win.showProgress(0, 2, 0.5, 2);
+        win.showTextStats({ characters: 400, estimatedTokens: 100 });
         await wait(100);
-        return png;
+        return { screenshot: png, text: "Hello <script>plain text<\/script>\nRevenue\nRevenue", characters: 49, estimatedTokens: 13 };
       };
       doc.getElementById("takeScreenshot").click();
       await wait(10);
       assert(doc.body.dataset.state === "capturing", "loading state announced");
       assert(doc.getElementById("takeScreenshot").disabled, "duplicate captures disabled");
       assert(!doc.getElementById("captureProgress").hidden, "progress visible");
+      assert(doc.getElementById("textTokens").textContent === "~100 tokens", "live text estimate visible");
       await wait(200);
       assert(doc.body.dataset.state === "success", "success state visible");
       assert(doc.getElementById("emptyState").hidden && !doc.getElementById("previewViewport").hidden, "preview replaces empty state");
       assert(doc.getElementById("imageMeta").textContent.includes("960"), "image dimensions displayed");
+      assert(!doc.getElementById("pageText").open, "text preview collapsed by default");
+      assert(doc.getElementById("textTokens").textContent === "~13 tokens", "final token estimate visible");
+      doc.querySelector("#pageText summary").click();
+      assert(doc.getElementById("pageText").open, "text preview expands");
+      assert(doc.getElementById("textPreview").textContent.includes("<script>plain text<\/script>"), "text displayed literally without HTML execution");
+      assert(!doc.getElementById("textPreview").querySelector("script"), "preview uses safe text content");
+      doc.querySelector("#pageText summary").click();
       doc.getElementById("zoomPreview").click();
+      assert(!doc.getElementById("destinations").hidden, "destination selector appears after capture");
+      const choices = doc.querySelectorAll(".destination-row input");
+      assert(choices.length === 5 && [...choices].every((input) => !input.checked), "all chats listed with no automatic selection");
+      assert(doc.querySelectorAll(".destination-provider").length === 3, "destinations grouped under three provider headings");
+      assert(choices[3].disabled && choices[4].disabled, "unverified providers discovered but not selectable");
+      assert(doc.querySelectorAll(".destination-feedback.unsupported").length === 2, "unverified providers explicitly marked unsupported");
+      const search = doc.getElementById("destinationSearch");
+      search.value = "claude"; search.dispatchEvent(new win.Event("input"));
+      assert(doc.querySelectorAll(".destination-row").length === 1, "search matches provider names");
+      search.value = ""; search.dispatchEvent(new win.Event("input"));
+      assert(doc.getElementById("destinationList").textContent.includes("Incognito"), "incognito destination labelled");
+      assert(doc.getElementById("destinationList").textContent.includes("Other window"), "multiple windows visible");
+      const deliveries = [];
+      win.eval("destinationUI").configureDelivery(async (destination, capture) => {
+        deliveries.push(destination.id);
+        assert(capture.text.includes("Revenue"), "selected chat receives captured text");
+        assert(capture.screenshot === png, "selected chat receives captured screenshot");
+        if (destination.id === 11) throw new Error("Test delivery failure");
+        return { sent: true };
+      });
+      const currentChoices = doc.querySelectorAll(".destination-row input");
+      currentChoices[0].click(); currentChoices[1].click();
+      assert(doc.getElementById("sendCapture").textContent === "Send to 2 chats", "multiple destination count visible");
+      assert(deliveries.length === 0, "selection alone sends nothing");
+      doc.getElementById("sendCapture").click();
+      await wait(100);
+      assert(deliveries.join(",") === "10,11", "only selected chats receive capture");
+      assert(doc.querySelector(".destination-feedback.sent") && doc.querySelector(".destination-feedback.failed"), "partial success and failure visible together");
+      assert(doc.getElementById("sendCapture").textContent === "Send to 1 chat", "successful destination excluded from retry");
       assert(doc.getElementById("previewViewport").classList.contains("actual-size"), "actual-size preview works");
       doc.getElementById("zoomPreview").click();
       win.captureFullPage = async () => { throw new Error("Cannot access a chrome:// URL"); };
@@ -55,9 +103,10 @@ document.getElementById("popup").addEventListener("load", async (event) => {
       assert(doc.body.dataset.state === "error", "inline error state visible");
       assert(doc.getElementById("statusDetail").textContent.includes("regular webpage"), "protected-page error is actionable");
       assert(doc.getElementById("preview").src === png, "failed retry preserves previous screenshot");
+      assert(doc.getElementById("textPreview").textContent.includes("Revenue\nRevenue"), "failed retry preserves paired text");
       assert(!doc.getElementById("takeScreenshot").disabled, "retry action available");
       if (location.search !== "?state=error") {
-        win.setStatus("success", "Your screenshot is ready", "Scroll to explore. Everything stays on your device.");
+        win.setStatus("success", "", "");
         doc.getElementById("buttonLabel").textContent = "Capture again";
       }
     }

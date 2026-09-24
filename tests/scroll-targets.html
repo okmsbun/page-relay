@@ -118,9 +118,9 @@
       });
     });
     try {
-      await new Promise((resolve, reject) => {
+      for (const file of ["page-text.js", "content.js"]) await new Promise((resolve, reject) => {
         const script = document.createElement("script");
-        script.src = "../content.js";
+        script.src = "../" + file;
         script.onload = resolve;
         script.onerror = reject;
         document.head.append(script);
@@ -148,6 +148,11 @@
       assert(side.documentHeight === sidebar.scrollHeight, "selects sidebar for its own capture pass");
       await send("scroll", { scrollY: 700 });
       assert(sidebar.scrollTop === 700 && main.scrollTop === 450, "independent pass does not rewind main content");
+      const pageText = await send("text");
+      assert(pageText.text.includes("Separate scrolling sidebar"), "sidebar text retained after it scrolls out of view");
+      assert(pageText.text.includes("Fixed app shell"), "application toolbar text included");
+      assert(pageText.text.split("Sticky header — should appear once").length === 2, "sticky text included once across style changes");
+      assert(pageText.characters === pageText.text.length, "text response belongs to capture session");
       await send("restore");
       assert(main.scrollTop === originalY && sidebar.scrollTop === 88, "restores selected scroller without changing sidebar");
       assert(getComputedStyle(document.getElementById("sticky")).position === "sticky", "restores sticky positioning");

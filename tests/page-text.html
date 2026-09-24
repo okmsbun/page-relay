@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Rendered text collection fixture</title>
+<style>
+  body { margin: 0; font: 16px/20px sans-serif; }
+  #toolbar { position: fixed; inset: 0 0 auto; height: 40px; background: white; }
+  #nav { position: fixed; top: 50px; left: 0; width: 140px; height: 260px; overflow: auto; }
+  #main { position: fixed; top: 50px; left: 160px; width: 420px; height: 260px; overflow: auto; }
+  #mainContent { position: relative; height: 1100px; }
+  .row { position: absolute; height: 30px; left: 0; }
+  #virtual { top: 50px; }
+  #repeat1 { top: 100px; }
+  #repeat2 { top: 600px; }
+  #overlap { top: 240px; }
+  #nav > div { height: 1100px; }
+  #normal { display: none; }
+  #result { position: fixed; inset: 0; background: white; z-index: 10; }
+</style>
+<header id="toolbar">Application toolbar</header>
+<aside id="nav"><div>Navigation label</div></aside>
+<main id="main"><div id="mainContent">
+  <p id="inline" style="margin:0">Hello <strong>world</strong> <em>today</em>.</p>
+  <div id="virtual" class="row">Rows 1–50</div>
+  <div id="repeat1" class="row">Revenue</div>
+  <div id="overlap" class="row">Overlap text</div>
+  <div id="repeat2" class="row">Revenue</div>
+  <div style="display:none">Hidden secret</div>
+  <div style="opacity:0">Invisible text</div>
+  <pre style="position:absolute;top:800px">  code line
+    indented line</pre>
+</div></main>
+<div id="normal"><header style="position:fixed;top:0">Persistent header</header>
+  <div style="height:140px">Document start</div>
+  <p>Revenue</p><div style="height:700px"></div><p>Revenue</p><p>Document end</p>
+</div>
+<script src="../page-text.js"></script>
+<script>
+const checks = [];
+const assert = (ok, label) => { if (!ok) throw new Error(label); checks.push(label); };
+const occurrences = (text, term) => text.split(term).length - 1;
+try {
+  const main = document.getElementById("main");
+  const nav = document.getElementById("nav");
+  const virtual = document.getElementById("virtual");
+  const collector = new PageTextCollector([main, nav]);
+  collector.sample();
+  collector.sample();
+  main.scrollTop = 200;
+  collector.sample();
+  // Same text, new DOM node, same content coordinate: overlap must not duplicate it.
+  document.getElementById("overlap").replaceWith(document.getElementById("overlap").cloneNode(true));
+  collector.sample();
+  // Reuse the SAME node with new text and coordinates, as a virtual grid does.
+  virtual.firstChild.data = "Rows 500–550";
+  virtual.style.top = "550px";
+  main.scrollTop = 500;
+  collector.sample();
+  // Identical content recycled into a different row remains meaningful.
+  virtual.firstChild.data = "Revenue";
+  virtual.style.top = "680px";
+  collector.sample();
+  main.scrollTop = 780;
+  collector.sample();
+  // Dynamically append rendered text, with no second traversal.
+  const late = document.createElement("div");
+  late.style.cssText = "position:absolute;top:1000px";
+  late.textContent = "Lazy-loaded ending";
+  document.getElementById("mainContent").append(late);
+  collector.sample();
+  nav.scrollTop = 500;
+  collector.sample();
+  const result = collector.result();
+  assert(result.text.includes("Rows 1–50") && result.text.includes("Rows 500–550"), "retains removed virtual rows and their replacements");
+  assert(occurrences(result.text, "Overlap text") === 1, "overlap deduplicated even after DOM replacement");
+  assert(occurrences(result.text, "Revenue") === 3, "legitimate repeated labels and recycled row text preserved");
+  assert(occurrences(result.text, "Application toolbar") === 1 && occurrences(result.text, "Navigation label") === 1, "persistent frame and navigation included once");
+  assert(result.text.indexOf("Navigation label") < result.text.indexOf("Hello"), "regions use visual order rather than capture order");
+  assert(result.text.includes("Hello world today."), "inline words and whitespace preserved");
+  assert(result.text.includes("  code line\n    indented line"), "preformatted whitespace preserved");
+  assert(!result.text.includes("Hidden secret") && !result.text.includes("Invisible text"), "hidden DOM content excluded");
+  assert(result.text.includes("Lazy-loaded ending"), "late inserted content collected");
+  assert(result.characters === result.text.length && result.estimatedTokens === Math.ceil(result.text.length / 4), "final size metrics match text");
+  assert(result.title === document.title && result.url === location.href, "basic page metadata retained");
+
+  for (const id of ["toolbar", "nav", "main"]) document.getElementById(id).style.display = "none";
+  document.getElementById("normal").style.display = "block";
+  const normal = new PageTextCollector([]);
+  normal.sample();
+  window.scrollTo(0, 500);
+  normal.sample();
+  window.scrollTo(0, 9999);
+  normal.sample();
+  const text = normal.result().text;
+  assert(text.includes("Document start") && text.includes("Document end"), "normal document includes start and end");
+  assert(occurrences(text, "Revenue") === 2, "normal page repeated sections preserved");
+  assert(occurrences(text, "Persistent header") === 1, "normal page fixed text is not repeated");
+  document.body.insertAdjacentHTML("beforeend", '<pre id="result"></pre>');
+  document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
+} catch (error) {
+  document.body.insertAdjacentHTML("beforeend", '<pre id="result"></pre>');
+  document.getElementById("result").textContent = "FAIL " + error.message + " " + JSON.stringify(checks);
+}
+</script>

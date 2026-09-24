@@ -107,6 +107,9 @@ function harness({
         query: async () => [{ id: 1, windowId: 2 }],
         sendMessage: async (_tab, message, options) => {
           assert.equal(options.frameId, 0);
+          if (message.type === "fullPageCapture:text") return { ok: true, result: {
+            text: "Rendered text", characters: 13, estimatedTokens: 4, title: "Test page", url: "https://example.test/",
+          } };
           if (message.type === "fullPageCapture:select") {
             state.regionIndex = message.index;
             ({ viewport, crop } = regions[message.index]);
@@ -283,7 +286,10 @@ test("multiple areas are captured once each, then composed with the first app fr
     { height: 1000, viewport: 450, crop: { x: 0, y: 50, width: 20, height: 450 } },
   ];
   const { run, state } = harness({ ...regions[0], windowHeight: 800, regions });
-  assert.equal(await run("captureFullPage({id: 1, windowId: 2})"), "data:image/png;base64,composed");
+  const result = await run("captureFullPage({id: 1, windowId: 2})");
+  assert.equal(result.screenshot, "data:image/png;base64,composed");
+  assert.equal(result.text, "Rendered text");
+  assert.equal(result.title, "Test page");
   assert.equal(state.composed.panels.length, 2);
   for (let index = 0; index < 2; index++) {
     const canvas = state.composed.panels[index].canvas;
@@ -344,6 +350,10 @@ function pageHarness({ imageReadyAt = 900, fontsReadyAt = 1200 } = {}) {
   };
   const context = vm.createContext({
     window,
+    PageTextCollector: class {
+      sample() {}
+      stats() { return { characters: 0, estimatedTokens: 0 }; }
+    },
     innerWidth: 100,
     innerHeight: 800,
     performance: { now: () => state.time },

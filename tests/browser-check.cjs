@@ -38,4 +38,8 @@ async function check(file, query) {
 (async () => {
   await check("scroll-targets.html", "?verify");
   await check("popup-states.html", "");
+  await check("page-text.html", "");
+  await check("chatgpt-adapter.html", "");
+  await check("chatgpt-verification.html", "");
+  await check("chatgpt-verification.html", "?unconfirmed");
 })().catch((error) => { console.error(error.message); process.exitCode = 1; });

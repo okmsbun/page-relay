@@ -8,6 +8,7 @@ const MAX_CAPTURE_SEGMENTS = 200;
 const MAX_CANVAS_SIDE = 32767;
 const MAX_CANVAS_PIXELS = 64 * 1024 * 1024;
 let lastCaptureTime = 0;
+let capturedPage = null;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -121,6 +122,7 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     });
     lastCaptureTime = Date.now();
     const after = await sendToPage(tab.id, { type: "fullPageCapture:measure" });
+    showTextStats(after.textStats);
     if (!sameViewport(before, after)) {
       // Retry this position only; never start another full-page traversal.
       if (++unstableCaptures >= 3) {
@@ -218,7 +220,7 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
 async function captureFullPage(tab) {
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    files: ["content.js"],
+    files: ["page-text.js", "content.js"],
   });
   const port = chrome.tabs.connect(tab.id, {
     name: "fullPageCapture",
@@ -243,14 +245,15 @@ async function captureFullPage(tab) {
         pixels += canvas.width * canvas.height;
         if (pixels > MAX_CANVAS_PIXELS) throw new Error("The combined scrolling areas are too large to capture safely.");
       }
-      document.getElementById("statusTitle").textContent = "Finishing your screenshot";
+      document.getElementById("statusTitle").textContent = "Finishing capture…";
       const resultCanvas = initial.regions?.length
         ? composeApplicationScreenshot(session.shell, panels, initial)
         : panels[0].canvas;
       try {
         const result = resultCanvas.toDataURL("image/png");
         if (!result.startsWith("data:image/png")) throw new Error("Chrome could not encode a PNG of this size.");
-        return result;
+        const pageText = await sendToPage(tab.id, { type: "fullPageCapture:text" });
+        return { screenshot: result, ...pageText };
       } finally {
         if (resultCanvas !== panels[0].canvas) resultCanvas.width = resultCanvas.height = 0;
       }
@@ -269,11 +272,18 @@ async function captureFullPage(tab) {
 
 let progressValue = 0;
 
+function showTextStats(stats) {
+  if (!stats) return;
+  const format = (value) => value >= 1000 ? `${(value / 1000).toFixed(1)}K` : String(value);
+  document.getElementById("textTokens").textContent = `~${format(stats.estimatedTokens)} tokens`;
+  document.getElementById("textCharacters").textContent = `${format(stats.characters)} chars${stats.truncated ? " · Text limit reached" : ""}`;
+}
+
 function showProgress(region, total, fraction, section) {
   progressValue = Math.max(progressValue, Math.min(95, Math.round((region + fraction) / total * 95)));
   document.getElementById("statusTitle").textContent = total > 1
-    ? `Capturing area ${region + 1} of ${total}` : "Capturing the whole page";
-  document.getElementById("statusDetail").textContent = `Section ${section} · Keep this popup open.`;
+    ? `Capturing area ${region + 1} of ${total}` : "Capturing…";
+  document.getElementById("statusDetail").textContent = `Section ${section} · Keep popup open.`;
   document.getElementById("progressFill").style.width = `${progressValue}%`;
   document.getElementById("captureProgress").setAttribute("aria-valuenow", progressValue);
 }
@@ -306,6 +316,7 @@ document.getElementById("zoomPreview").addEventListener("click", (event) => {
 });
 
 button.addEventListener("click", async () => {
+  destinationUI.suspend();
   button.disabled = true;
   button.setAttribute("aria-busy", "true");
   document.getElementById("buttonLabel").textContent = "Capturing…";
@@ -313,12 +324,19 @@ button.addEventListener("click", async () => {
   document.getElementById("progressFill").style.width = "0%";
   document.getElementById("captureProgress").hidden = false;
   document.getElementById("captureProgress").setAttribute("aria-valuenow", "0");
-  setStatus("capturing", "Preparing your page", "Keep this popup open while the page scrolls.");
+  document.getElementById("pageText").hidden = false;
+  document.getElementById("pageText").open = false;
+  document.getElementById("textPreview").textContent = "Collecting rendered page text…";
+  showTextStats({ characters: 0, estimatedTokens: 0 });
+  setStatus("capturing", "Capturing…", "Keep popup open.");
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id) throw new Error("No active tab was found.");
-    const screenshot = await captureFullPage(tab);
-    preview.src = screenshot;
+    const result = await captureFullPage(tab);
+    capturedPage = result;
+    preview.src = result.screenshot;
+    showTextStats(result);
+    document.getElementById("textPreview").textContent = result.text || "No rendered page text was found.";
     document.getElementById("emptyState").hidden = true;
     for (const id of ["previewToolbar", "previewViewport", "imageMeta"]) {
       document.getElementById(id).hidden = false;
@@ -330,10 +348,17 @@ button.addEventListener("click", async () => {
     zoom.textContent = "100%";
     zoom.setAttribute("aria-pressed", "false");
     zoom.setAttribute("aria-label", "Show screenshot at actual size");
-    setStatus("success", "Your screenshot is ready", "Scroll to explore. Everything stays on your device.");
+    setStatus("success", "", "");
+    await destinationUI.show(result);
   } catch (error) {
     console.error(error);
     setStatus("error", "Couldn’t capture this page", friendlyError(error));
+    document.getElementById("pageText").hidden = !capturedPage;
+    if (capturedPage) {
+      showTextStats(capturedPage);
+      document.getElementById("textPreview").textContent = capturedPage.text || "No rendered page text was found.";
+      destinationUI.resume();
+    }
   } finally {
     button.disabled = false;
     button.removeAttribute("aria-busy");

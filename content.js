@@ -165,6 +165,7 @@
           background: backgroundColor(element),
         })) ?? [],
       background: backgroundColor(document.body),
+      textStats: captureState?.text.stats(),
     };
   }
 
@@ -308,6 +309,7 @@
         now - stableSince >= QUIET_MS &&
         now - state.lastMutation >= QUIET_MS
       ) {
+        state.text.sample();
         return metrics;
       }
     }
@@ -318,6 +320,7 @@
         "Page resources are still loading. Wait for them and try again.",
       );
     }
+    state.text.sample();
     return getMetrics();
   }
 
@@ -337,12 +340,15 @@
       scrollX: window.scrollX,
       scrollY: window.scrollY,
       savedStyles: new Map(),
+      text: new PageTextCollector(targets.map(({ element }) => element)),
       lastMutation: performance.now(),
       observer: new MutationObserver(() => {
         state.lastMutation = performance.now();
       }),
     };
     captureState = state;
+    // Preserve initially visible persistent UI before capture-only style changes.
+    state.text.sample();
     state.observer.observe(document.documentElement, {
       subtree: true,
       childList: true,
@@ -405,7 +411,13 @@
           return scrollToPosition(0);
         }
         case "fullPageCapture:measure":
+          requireState(captureState);
+          captureState.text.sample();
           return getMetrics();
+        case "fullPageCapture:text":
+          requireState(captureState);
+          captureState.text.sample();
+          return captureState.text.result();
         case "fullPageCapture:settle":
           return settle(message.minimumWait);
         case "fullPageCapture:restore":

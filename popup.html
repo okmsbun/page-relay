@@ -11,30 +11,18 @@
     <div class="app-icon" aria-hidden="true">
       <svg viewBox="0 0 24 24"><path d="M8 4H5a1 1 0 0 0-1 1v3m12-4h3a1 1 0 0 1 1 1v3M4 16v3a1 1 0 0 0 1 1h3m12-4v3a1 1 0 0 1-1 1h-3M8 9h8M8 12h8M8 15h5"/></svg>
     </div>
-    <div><h1>Page capture</h1><p>The complete picture.</p></div>
-    <span class="local-badge"><span></span>On device</span>
+    <h1>Page capture</h1>
   </header>
 
   <main>
     <section class="preview-card" aria-label="Screenshot preview">
       <div id="previewToolbar" class="preview-toolbar" hidden>
-        <span id="previewLabel">Preview <span class="format">PNG</span></span>
+        <span id="previewLabel">Screenshot</span>
         <button id="zoomPreview" class="zoom-button" type="button" aria-pressed="false" aria-label="Show screenshot at actual size">100%</button>
       </div>
       <div id="emptyState" class="empty-state">
-        <svg class="page-illustration" viewBox="0 0 160 130" fill="none" aria-hidden="true">
-          <rect class="illustration-back" x="39" y="16" width="91" height="102" rx="9"/>
-          <rect class="illustration-page" x="27" y="8" width="96" height="106" rx="9"/>
-          <path class="illustration-line" d="M27 29h96"/>
-          <circle cx="37" cy="19" r="2" fill="currentColor"/><circle cx="44" cy="19" r="2" fill="currentColor"/>
-          <rect class="illustration-block" x="37" y="39" width="18" height="62" rx="3"/>
-          <rect class="illustration-block" x="64" y="39" width="49" height="23" rx="3"/>
-          <path class="illustration-line" d="M65 73h47M65 82h47M65 91h31"/>
-          <rect class="illustration-accent" x="105" y="89" width="29" height="29" rx="9"/>
-          <path d="M119.5 96v14m-5-5 5 5 5-5" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-        <h2>Beyond the viewport.</h2>
-        <p>One image. The whole page.<br>Sidebars and all.</p>
+        <h2>No capture</h2>
+        <p>Capture the current page’s screenshot and text.</p>
       </div>
       <div id="previewViewport" class="preview-viewport" tabindex="0" aria-label="Scrollable screenshot preview" hidden>
         <img id="preview" alt="Captured full-page screenshot">
@@ -42,12 +30,20 @@
       <div id="imageMeta" class="image-meta" hidden></div>
     </section>
 
+    <details id="pageText" class="page-text" hidden>
+      <summary><span>Page text</span><span class="text-metrics"><strong id="textTokens" title="Estimated at roughly 4 characters per token">~0 tokens</strong><span id="textCharacters" class="text-characters">0 chars</span></span><span class="text-chevron" aria-hidden="true">⌄</span></summary>
+      <div class="text-content">
+        <p class="text-estimate">Tokens are estimated at roughly 4 characters each.</p>
+        <pre id="textPreview" tabindex="0" aria-label="Extracted page text"></pre>
+      </div>
+    </details>
+
     <section class="capture-status" aria-live="polite" aria-atomic="true">
       <span class="status-icon" aria-hidden="true">
         <svg viewBox="0 0 20 20"><path id="statusGlyph" d="M5 10l3 3 7-7"/></svg>
       </span>
-      <div><h2 id="statusTitle">Ready when you are</h2>
-        <p id="statusDetail">Your screenshot stays in this popup.</p></div>
+      <div><h2 id="statusTitle"></h2>
+        <p id="statusDetail"></p></div>
     </section>
     <div id="captureProgress" class="progress-track" role="progressbar" aria-label="Capture progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
       <div id="progressFill"></div>
@@ -57,9 +53,21 @@
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.5 5 8 3h4l1.5 2H16a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 16 17H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 5h2.5Z"/><circle cx="10" cy="10.5" r="3"/></svg>
       <span id="buttonLabel">Capture page</span>
     </button>
-    <p class="footer-note">Full page <span>·</span> Original resolution</p>
+    <section id="destinations" class="destinations" aria-label="AI conversation destinations" hidden>
+      <div class="destination-heading"><h2>Send to</h2>
+        <button id="refreshDestinations" class="zoom-button" type="button">Refresh</button></div>
+      <input id="destinationSearch" class="destination-search" type="search" placeholder="Find a conversation" aria-label="Find a conversation" hidden>
+      <div id="destinationList" class="destination-list" aria-label="Open conversations"></div>
+      <p id="destinationNote" class="destination-note" role="status" aria-live="polite"></p>
+      <button id="sendCapture" class="capture-button" type="button" disabled>Select conversations</button>
+    </section>
   </main>
   <script src="capture-layout.js"></script>
+  <script src="ai-providers.js"></script>
+  <script src="chat-destinations.js"></script>
+  <script src="chatgpt-adapter.js"></script>
+  <script src="provider-delivery.js"></script>
+  <script src="destinations-ui.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
