@@ -2,11 +2,25 @@
     "manifest_version": 3,
     "name": "Page capture",
     "version": "0.1.0",
+    "minimum_chrome_version": "116",
     "description": "Capture a page screenshot and text, then choose an AI conversation.",
     "action": {
         "default_title": "Page capture",
-        "default_popup": "popup.html"
+        "default_icon": {
+            "16": "assets/icons/icon-16.png",
+            "32": "assets/icons/icon-32.png",
+            "48": "assets/icons/icon-48.png",
+            "128": "assets/icons/icon-128.png"
+        }
     },
+    "icons": {
+        "16": "assets/icons/icon-16.png",
+        "32": "assets/icons/icon-32.png",
+        "48": "assets/icons/icon-48.png",
+        "128": "assets/icons/icon-128.png"
+    },
+    "side_panel": { "default_path": "sidepanel.html" },
+    "background": { "service_worker": "service-worker.js" },
     "host_permissions": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*",
@@ -15,18 +29,11 @@
         "https://chat.deepseek.com/*",
         "https://www.deepseek.com/*",
         "https://deepseek.com/*",
-        "https://perplexity.ai/*",
-        "https://www.perplexity.ai/*",
-        "https://copilot.microsoft.com/*",
-        "https://grok.com/*",
-        "https://chat.mistral.ai/*",
-        "https://www.meta.ai/*",
-        "https://meta.ai/*",
-        "https://poe.com/*",
-        "https://www.poe.com/*"
+        "https://copilot.microsoft.com/*"
     ],
     "permissions": [
         "activeTab",
-        "scripting"
+        "scripting",
+        "sidePanel"
     ]
 }

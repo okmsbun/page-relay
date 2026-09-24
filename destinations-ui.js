@@ -7,8 +7,6 @@ const destinationUI = (() => {
   const note = document.getElementById("destinationNote");
   const tabs = document.getElementById("providerTabs");
   const emptyState = document.getElementById("noDestinations");
-  const noticeList = document.getElementById("discoveryNotices");
-  let notices = [];
   let discoveryError = false;
   let activeProvider = null;
   let destinations = [];
@@ -33,16 +31,6 @@ const destinationUI = (() => {
     const noChats = destinations.length === 0;
     emptyState.hidden = !noChats || discovering || discoveryError;
     list.hidden = sendButton.hidden = noChats;
-    noticeList.replaceChildren();
-    noticeList.hidden = !notices.length;
-    for (const notice of notices) {
-      const line = document.createElement("p");
-      line.append(document.createTextNode(notice.message + " "));
-      const link = document.createElement("a");
-      link.textContent = notice.label;
-      link.href = notice.url; link.target = "_blank"; link.rel = "noopener noreferrer";
-      line.append(link); noticeList.append(line);
-    }
     const query = search.value.trim().toLowerCase();
     const providers = AIProviders.all.filter((provider) => destinations.some((item) => item.providerId === provider.id));
     if (!providers.some((provider) => provider.id === activeProvider)) activeProvider = providers[0]?.id || null;
@@ -131,7 +119,7 @@ const destinationUI = (() => {
       const icon = document.createElement("span");
       icon.className = `provider-icon provider-icon-${provider.id}`;
       icon.setAttribute("aria-hidden", "true");
-      icon.textContent = { chatgpt: "◎", claude: "✳", gemini: "✦", deepseek: "D", perplexity: "P", copilot: "C", grok: "G", mistral: "M", meta: "∞", poe: "P" }[provider.id];
+      icon.textContent = { chatgpt: "◎", claude: "✳", gemini: "✦", deepseek: "D", copilot: "C" }[provider.id];
       const favicon = destinations.find((item) => item.providerId === provider.id && item.favicon)?.favicon;
       if (favicon) {
         const image = document.createElement("img");
@@ -181,7 +169,6 @@ const destinationUI = (() => {
       const overview = await ChatDestinations.discoverOverview();
       if (version !== generation) return;
       const found = overview.destinations;
-      notices = overview.notices;
       const previous = new Map(destinations.map((item) => [item.id, item]));
       selection = new Set(found.filter((item) => selection.has(item.id) && !item.unavailable &&
         previous.get(item.id)?.url === item.url && previous.get(item.id)?.incognito === item.incognito).map((item) => item.id));
@@ -194,7 +181,7 @@ const destinationUI = (() => {
     } catch (error) {
       if (version !== generation) return;
       discoveryError = true;
-      selection.clear(); destinations = []; notices = []; render();
+      selection.clear(); destinations = []; render();
       note.textContent = `Could not find conversations: ${error.message}`;
     } finally {
       if (version === generation) { discovering = false; refreshButton.disabled = false; render(); }
@@ -207,7 +194,7 @@ const destinationUI = (() => {
       !["sent", "review", "unsupported"].includes(statuses.get(item.id)?.state));
     busy = true;
     refreshButton.disabled = search.disabled = true;
-    note.textContent = "Keep popup open while sending.";
+    note.textContent = "Keep the Side Panel open while sending.";
     try {
       const results = await ChatDestinations.sendSelected(chosen, capture, delivery, (id, result) => {
         statuses.set(id, result);

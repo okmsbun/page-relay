@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Read-only DeepSeek composer detection</title>
+<div id="fixture"></div><pre id="result" hidden>RUNNING</pre>
+<script src="../deepseek-discovery.js"></script>
+<script>
+const checks = [];
+const assert = (ok, label) => { if (!ok) throw new Error(label); checks.push(label); };
+const fixture = document.getElementById("fixture");
+const url = location.origin + location.pathname + location.search;
+try {
+  assert(!hasDeepSeekComposer(url), "marketing page without composer is excluded");
+  fixture.innerHTML = '<textarea placeholder="Contact us"></textarea>';
+  assert(!hasDeepSeekComposer(url), "textarea alone does not turn a marketing form into a chat");
+  fixture.innerHTML = '<textarea placeholder="Message DeepSeek"></textarea>';
+  assert(hasDeepSeekComposer(url), "known usable composer does not require an opened attachment menu");
+  fixture.innerHTML = '<textarea placeholder="Message DeepSeek">Existing draft</textarea><input type="file" multiple accept=".png,.txt">';
+  let events = 0;
+  for (const type of ['input', 'change', 'click', 'submit']) fixture.addEventListener(type, () => events++);
+  const editor = fixture.querySelector('textarea');
+  const upload = fixture.querySelector('input');
+  const data = new DataTransfer(); data.items.add(new File(['draft'], 'draft.txt', { type: 'text/plain' }));
+  upload.files = data.files;
+  assert(hasDeepSeekComposer(url), "usable DeepSeek composer is detected even with an existing draft");
+  assert(!events && editor.value === 'Existing draft' && upload.files[0].name === 'draft.txt', "probe does not modify drafts, attachments, or dispatch events");
+  assert(!hasDeepSeekComposer(url + '/changed'), "navigated candidate fails verification");
+  editor.disabled = true; assert(!hasDeepSeekComposer(url), "disabled composer excluded"); editor.disabled = false;
+  editor.readOnly = true; assert(!hasDeepSeekComposer(url), "read-only composer excluded"); editor.readOnly = false;
+  editor.hidden = true; assert(!hasDeepSeekComposer(url), "hidden composer excluded"); editor.hidden = false;
+  fixture.append(editor.cloneNode()); assert(!hasDeepSeekComposer(url), "ambiguous multiple composers excluded");
+  document.getElementById('result').textContent = 'PASS ' + JSON.stringify(checks);
+} catch (error) { document.getElementById('result').textContent = 'FAIL ' + error.message + ' ' + JSON.stringify(checks); }
+</script>

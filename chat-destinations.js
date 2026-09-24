@@ -1,12 +1,14 @@
-/* Discovery uses Chrome metadata only. No page DOM or private provider APIs. */
+/* URL discovery plus a read-only DeepSeek new-chat capability check.
+   No private APIs, capture changes, or sending during discovery. */
 const ChatDestinations = (() => {
   function identity(rawUrl) {
     return AIProviders.match(rawUrl)?.url || null;
   }
 
-  function describeTabs(tabs, currentWindowId, incognitoAllowed) {
+  function describeTabs(tabs, currentWindowId, incognitoAllowed, verifiedComposers = new Set()) {
     const eligible = tabs.filter((tab) => Number.isInteger(tab.id) && identity(tab.url) &&
-      (!tab.incognito || incognitoAllowed));
+      (!tab.incognito || incognitoAllowed) &&
+      (!AIProviders.match(tab.url).requiresComposer || verifiedComposers.has(tab.id)));
     const windowIds = [...new Set(eligible.map((tab) => tab.windowId))].sort((a, b) => a - b);
     const otherWindows = windowIds.filter((id) => id !== currentWindowId);
     const described = eligible.sort((a, b) => Number(!!a.incognito) - Number(!!b.incognito) ||
@@ -20,7 +22,7 @@ const ChatDestinations = (() => {
         // Use Chrome's known favicon, never a third-party favicon lookup service.
         favicon: safeFavicon(tab.favIconUrl, provider),
         discoveryOnly,
-        title: tab.title?.trim() || "New chat",
+        title: provider.id === "deepseek" && !conversation ? "New chat — DeepSeek" : tab.title?.trim() || "New chat",
         label: [tab.incognito ? "Incognito" : null,
           tab.windowId === currentWindowId ? "This window" : `Other window ${otherWindows.indexOf(tab.windowId) + 1}`,
           `Tab ${tab.index + 1}`, tab.active ? "Active" : "Background"].filter(Boolean).join(" · "),
@@ -57,16 +59,19 @@ const ChatDestinations = (() => {
       chrome.windows.getCurrent(),
       chrome.extension.isAllowedIncognitoAccess(),
     ]);
-    const notices = new Map();
-    for (const tab of tabs) {
-      if (tab.incognito && !incognitoAllowed) continue;
-      const provider = AIProviders.landing(tab.url);
-      if (provider) notices.set(provider.id, {
-        providerId: provider.id, message: `${provider.name} is open on its website, not in a chat.`,
-        label: `Open ${provider.name} chat`, url: provider.chatUrl,
-      });
-    }
-    return { destinations: describeTabs(tabs, window.id, incognitoAllowed), notices: [...notices.values()] };
+    const verifiedComposers = new Set();
+    await Promise.all(tabs.map(async (tab) => {
+      const match = AIProviders.match(tab.url);
+      if (!Number.isInteger(tab.id) || !match?.requiresComposer || (tab.incognito && !incognitoAllowed) ||
+          tab.discarded || tab.frozen || tab.pendingUrl || tab.status === "loading") return;
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id, frameIds: [0] }, func: hasDeepSeekComposer, args: [match.url],
+        });
+        if (results[0]?.result === true) verifiedComposers.add(tab.id);
+      } catch { /* Closed, restricted, or unready tabs are not verified destinations. */ }
+    }));
+    return { destinations: describeTabs(tabs, window.id, incognitoAllowed, verifiedComposers) };
   }
 
   async function validate(destination) {

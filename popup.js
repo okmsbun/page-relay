@@ -120,6 +120,11 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       format: "png",
     });
     lastCaptureTime = Date.now();
+    const [activeAfterCapture] = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+    if (activeAfterCapture?.id !== tab.id) {
+      // A Side Panel stays open on tab switches. Never stitch another tab's pixels.
+      throw new Error("The active tab changed during capture. Keep the source tab active until capture finishes.");
+    }
     const after = await sendToPage(tab.id, { type: "fullPageCapture:measure" });
     showTextStats(after.textStats);
     if (!sameViewport(before, after)) {
@@ -282,7 +287,7 @@ function showProgress(region, total, fraction, section) {
   progressValue = Math.max(progressValue, Math.min(95, Math.round((region + fraction) / total * 95)));
   document.getElementById("statusTitle").textContent = total > 1
     ? `Capturing area ${region + 1} of ${total}` : "Capturing…";
-  document.getElementById("statusDetail").textContent = `Section ${section} · Keep popup open.`;
+  document.getElementById("statusDetail").textContent = `Section ${section} · Keep the source tab active until capture finishes.`;
   document.getElementById("progressFill").style.width = `${progressValue}%`;
   document.getElementById("captureProgress").setAttribute("aria-valuenow", progressValue);
 }
@@ -327,7 +332,7 @@ async function startPopupCapture(sourceTab) {
   document.getElementById("pageText").open = false;
   document.getElementById("textPreview").textContent = "Collecting rendered page text…";
   showTextStats({ characters: 0, estimatedTokens: 0 });
-  setStatus("capturing", "Capturing…", "Keep popup open.");
+  setStatus("capturing", "Capturing…", "Keep the source tab active until capture finishes.");
   try {
     const tab = await sourceTab;
     if (!tab?.id) throw new Error("No active tab was found.");
@@ -352,7 +357,7 @@ async function startPopupCapture(sourceTab) {
   } catch (error) {
     console.error(error);
     document.querySelector("#emptyState h2").textContent = "Preview unavailable";
-    setStatus("error", "Couldn’t capture this page", `${friendlyError(error)} Close and reopen the popup to retry.`);
+    setStatus("error", "Couldn’t capture this page", `${friendlyError(error)} Close the Side Panel, then reopen it using the extension toolbar icon to retry.`);
     document.getElementById("pageText").hidden = !capturedPage;
     if (capturedPage) {
       showTextStats(capturedPage);

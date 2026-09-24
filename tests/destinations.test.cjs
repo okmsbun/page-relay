@@ -6,6 +6,7 @@ const path = require("node:path");
 function harness(chrome = {}, fixtureProviders = []) {
   const context = vm.createContext({ chrome, URL });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "../ai-providers.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../deepseek-discovery.js"), "utf8"), context);
   // Test-only capabilities to exercise future cross-provider dispatch. Never
   // enable an unverified adapter in the extension shipped to the user.
   for (const id of fixtureProviders) vm.runInContext(`AIProviders.get(${JSON.stringify(id)}).sending = true`, context);
@@ -47,7 +48,7 @@ test("discovery queries all accessible windows without broad tabs permission", a
   assert.equal((await api.discover()).length, 2);
   assert.equal(query.currentWindow, undefined);
   assert.equal(query.active, undefined);
-  assert.equal(query.url.length, 16);
+  assert.equal(query.url.length, 8);
   assert.ok(query.url.includes("https://claude.ai/*"));
 });
 
@@ -108,15 +109,13 @@ test("pre-send busy is temporary, other chats continue, and retry is explicit", 
   assert.deepEqual(calls, [1, 2, 3, 4, 1]);
 });
 
-test("all ten providers are identified, but unimplemented senders stay discovery-only", () => {
+test("only five providers remain, and unimplemented senders stay discovery-only", () => {
   const api = harness();
   const urls = ["https://chatgpt.com/c/one", "https://claude.ai/chat/two", "https://gemini.google.com/app/three",
-    "https://chat.deepseek.com/a/chat/s/four", "https://www.perplexity.ai/search/five",
-    "https://copilot.microsoft.com/chats/six", "https://grok.com/c/seven", "https://chat.mistral.ai/chat/eight",
-    "https://www.meta.ai/c/nine", "https://poe.com/chat/ten"];
+    "https://chat.deepseek.com/a/chat/s/four", "https://copilot.microsoft.com/chats/five"];
   const entries = api.describeTabs(urls.map((url, i) => tab(i, 10 + i, { url })), 10, false);
   assert.deepEqual(Array.from(entries, (item) => item.providerId),
-    ["chatgpt", "claude", "gemini", "deepseek", "perplexity", "copilot", "grok", "mistral", "meta", "poe"]);
+    ["chatgpt", "claude", "gemini", "deepseek", "copilot"]);
   assert.equal(entries[0].unavailable, null);
   assert.equal(entries[1].unavailable, null);
   assert.equal(entries[2].unavailable, null);
@@ -145,24 +144,48 @@ test("discovery-only destinations cannot reach an adapter; later selected chats 
   assert.deepEqual(Array.from(results, (result) => result.state), ["unavailable", "sent"]);
 });
 
-test("DeepSeek landing page is explained, never mistaken for a sendable conversation", async () => {
+test("DeepSeek roots need a verified composer; existing conversations keep URL discovery", async () => {
+  const probes = [];
   const api = harness({ tabs: { query: async () => [tab(1, 10, { url: "https://www.deepseek.com/en/" }),
     tab(2, 10, { url: "https://chat.deepseek.com/" }), tab(3, 20, { url: "https://chat.deepseek.com/a/chat/s/abc" })] },
+    scripting: { executeScript: async (options) => { probes.push(options); return [{ result: options.target.tabId === 2 }]; } },
     windows: { getCurrent: async () => ({ id: 10 }) }, extension: { isAllowedIncognitoAccess: async () => false } });
-  const { destinations, notices } = await api.discoverOverview();
+  const { destinations } = await api.discoverOverview();
   assert.equal(destinations.length, 2);
   assert.ok(destinations.every((item) => item.providerId === "deepseek"));
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0].url, "https://chat.deepseek.com/");
-  assert.equal(api.identity("https://www.deepseek.com/en/"), null);
+  assert.equal(destinations[0].title, "New chat — DeepSeek");
+  assert.equal(destinations[1].conversation, true);
+  assert.deepEqual(probes.map((options) => options.target.tabId), [1, 2]);
+  assert.ok(probes.every((options) => options.target.frameIds[0] === 0 && options.func.name === "hasDeepSeekComposer"));
 });
 
-test("new provider routes reject read-only shares, account pages and spoofed hosts", () => {
+test("removed providers, read-only shares, account pages and spoofed hosts are excluded", () => {
   const { identity } = harness();
   for (const url of ["https://www.meta.ai/share/a", "https://www.meta.ai/login", "https://poe.com/login?redirect_url=/",
-    "https://poe.com/s/shared", "https://poe.com/settings", "https://poe.com.evil.test/chat/x", "https://www.deepseek.com/en/"]) {
+    "https://poe.com/s/shared", "https://poe.com/settings", "https://poe.com.evil.test/chat/x", "https://www.deepseek.com/blog",
+    "https://www.perplexity.ai/", "https://grok.com/", "https://www.meta.ai/", "https://chat.mistral.ai/chat", "https://poe.com/",
+    "https://chat.deepseek.com/sign_in", "https://chat.deepseek.com/share/a", "https://chat.deepseek.com.evil.test/", "http://deepseek.com/"]) {
     assert.equal(identity(url), null, url);
   }
+});
+
+test("DeepSeek public landing with composer is a destination, but denied or inaccessible probes are not", async () => {
+  const urls = ["https://www.deepseek.com/en/", "https://deepseek.com/", "https://chat.deepseek.com/",
+    "https://www.deepseek.com/", "https://chat.deepseek.com/"];
+  const probes = [];
+  const api = harness({ tabs: { query: async () => urls.map((url, i) => tab(i + 1, 10, {
+    url, incognito: i === 3, discarded: i === 4,
+  })) }, scripting: { executeScript: async ({ target }) => {
+    probes.push(target.tabId);
+    if (target.tabId === 2) throw new Error("Permission denied");
+    return [{ result: target.tabId === 1 }];
+  } }, windows: { getCurrent: async () => ({ id: 10 }) }, extension: { isAllowedIncognitoAccess: async () => false } });
+  const { destinations } = await api.discoverOverview();
+  assert.deepEqual(probes, [1, 2, 3]);
+  assert.equal(destinations.length, 1);
+  assert.equal(destinations[0].title, "New chat — DeepSeek");
+  assert.equal(destinations[0].url, "https://www.deepseek.com/en");
+  assert.ok(destinations[0].discoveryOnly); // Composer discovery never enables an unverified sender.
 });
 
 test("manifest limits host access to the provider registry and preserves MV3 permissions", () => {
@@ -171,9 +194,10 @@ test("manifest limits host access to the provider registry and preserves MV3 per
   const patterns = vm.runInContext("AIProviders.patterns", context);
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "../manifest.json"), "utf8"));
   assert.deepEqual(manifest.host_permissions.sort(), Array.from(patterns).sort());
-  assert.deepEqual(manifest.permissions, ["activeTab", "scripting"]);
+  assert.deepEqual(manifest.permissions, ["activeTab", "scripting", "sidePanel"]);
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.side_panel, undefined);
+  assert.equal(manifest.side_panel.default_path, "sidepanel.html");
+  assert.equal(manifest.action.default_popup, undefined);
 });
 
 test("favicons accept only HTTPS provider-host assets and otherwise use a local fallback", () => {

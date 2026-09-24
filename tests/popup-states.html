@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Popup sessions and provider tabs</title>
+<title>Side Panel sessions and provider tabs</title>
 <style>body { margin: 0; } iframe { display: block; border: 0; width: 380px; height: 600px; }</style>
 <div id="frames"></div>
 <pre id="result" hidden>RUNNING</pre>
@@ -9,9 +9,9 @@
   const checks = [];
   const assert = (ok, label) => { if (!ok) throw new Error(label); checks.push(label); };
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const html = await (await fetch("../popup.html")).text();
+  const html = await (await fetch("../sidepanel.html")).text();
   const base = new URL("../", location.href).href;
-  let sourceId = 1, captureCalls = [], queries = 0, fail = false, discoveryFails = false;
+  let sourceId = 1, captureCalls = [], queries = 0, fail = false, discoveryFails = false, deepseekComposer = false;
   const chats = [
     { id: 10, windowId: 2, index: 1, title: "Extension debugging", url: "https://chatgpt.com/c/one", status: "complete", incognito: false },
     { id: 11, windowId: 3, index: 0, title: "Other discussion", url: "https://chatgpt.com/c/two", status: "complete", incognito: false },
@@ -26,12 +26,13 @@
   ctx.fillStyle = "white"; ctx.font = "32px system-ui"; ctx.fillText("Sample page", 30, 90);
   for (let y = 200; y < 2500; y += 150) { ctx.fillStyle = "white"; ctx.fillRect(30, y, 900, 110); }
   const png = image.toDataURL();
-  // Fixtures install mocks before the real popup-session.js runs.
+  // Fixtures install mocks before the real sidepanel-session.js runs.
   window.configurePopupFixture = (win) => {
     win.chrome = { tabs: {
-      query: async (options) => { if (options.url) { if (discoveryFails) throw new Error("Test discovery error"); return chats; } queries++; return [{ id: sourceId, windowId: 2 }]; },
+      query: async (options) => { if (options.url) { if (discoveryFails) throw new Error("Test discovery error"); return chats; } queries++; assert(options.windowId === 2, "capture source queried in the panel's own window"); return [{ id: sourceId, windowId: 2 }]; },
       get: async (id) => chats.find((tab) => tab.id === id),
-    }, windows: { getCurrent: async () => ({ id: 2 }) }, extension: { isAllowedIncognitoAccess: async () => true } };
+    }, scripting: { executeScript: async () => [{ result: deepseekComposer }] },
+      windows: { getCurrent: async () => ({ id: 2 }) }, extension: { isAllowedIncognitoAccess: async () => true } };
     win.captureFullPage = async (tab) => {
       captureCalls.push(tab.id);
       win.showProgress(0, 1, 0.5, 2);
@@ -43,10 +44,10 @@
   };
   async function openPopup() {
     const frame = document.createElement("iframe");
-    frame.title = "Popup under test";
+    frame.title = "Side Panel UI under test";
     const loaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
     frame.srcdoc = html.replace("<head>", '<head><base href="' + base + '">')
-      .replace('<script src="popup-session.js">', '<script>parent.configurePopupFixture(window)<\/script><script src="popup-session.js">');
+      .replace('<script src="sidepanel-session.js">', '<script>parent.configurePopupFixture(window)<\/script><script src="sidepanel-session.js">');
     document.getElementById("frames").replaceChildren(frame);
     await loaded;
     return { frame, win: frame.contentWindow, doc: frame.contentDocument };
@@ -88,6 +89,14 @@
     assert(!doc.getElementById("destination-14").disabled, "verified Gemini is selectable");
     chooseProvider("chatgpt");
     assert(doc.getElementById("destination-10").checked, "selection survives provider switches");
+    const pinnedImage = doc.getElementById("preview").src;
+    const pinnedText = doc.getElementById("textPreview").textContent;
+    frame.style.width = "300px"; await wait(20);
+    assert(doc.documentElement.scrollWidth <= 300, "Side Panel UI fits a narrow panel without horizontal page overflow");
+    frame.style.width = "480px"; await wait(20);
+    assert(doc.getElementById("preview").src === pinnedImage && doc.getElementById("textPreview").textContent === pinnedText && captureCalls.length === 1 && doc.getElementById("destination-10").checked,
+      "tab source changes and panel resizing preserve capture, text, and selection");
+    frame.style.width = "380px";
     doc.getElementById("provider-chatgpt").dispatchEvent(new win.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     assert(doc.getElementById("provider-claude").getAttribute("aria-selected") === "true", "keyboard arrow changes provider");
     // The delivery is mocked below; this fixture never sends to a real provider.
@@ -152,8 +161,11 @@
     assert(doc.getElementById("providerTabs").hidden && doc.getElementById("destinationList").hidden && doc.getElementById("sendCapture").hidden && doc.getElementById("destinationSearch").hidden, "empty state hides tabs list search and Send");
     assert(!doc.getElementById("refreshDestinations").disabled, "empty state keeps Refresh available");
     chats.push({ id: 16, windowId: 2, index: 1, url: "https://www.deepseek.com/en/", incognito: false }); await refresh();
-    assert(doc.getElementById("providerTabs").hidden && doc.getElementById("discoveryNotices").textContent.includes("not in a chat"), "DeepSeek website is explained without creating a fake conversation tab");
-    assert(doc.querySelector("#discoveryNotices a").href === "https://chat.deepseek.com/", "DeepSeek notice links to real chat app");
+    assert(doc.getElementById("providerTabs").hidden && !doc.getElementById("noDestinations").hidden, "DeepSeek marketing page without a composer leaves compact empty state");
+    deepseekComposer = true; await refresh();
+    assert(doc.getElementById("provider-deepseek") && doc.getElementById("destinationList").textContent.includes("New chat — DeepSeek"), "DeepSeek landing page with usable composer becomes a new-chat destination");
+    assert(!doc.body.textContent.includes("not in a chat"), "no misleading DeepSeek website warning");
+    deepseekComposer = false;
     discoveryFails = true; await refresh();
     assert(doc.getElementById("noDestinations").hidden && doc.getElementById("destinationNote").textContent.includes("Test discovery error"), "query failure is not misreported as no open chats");
     discoveryFails = false; chats.splice(0, chats.length, ...originalChats); await refresh();
@@ -168,7 +180,7 @@
     frame.remove(); fail = true;
     ({ frame, win, doc } = await openPopup()); await wait(220);
     assert(doc.body.dataset.state === "error", "automatic capture errors are displayed");
-    assert(doc.getElementById("statusDetail").textContent.includes("regular webpage") && doc.getElementById("statusDetail").textContent.includes("reopen"), "error explains protected page and reopen recovery");
+    assert(doc.getElementById("statusDetail").textContent.includes("regular webpage") && doc.getElementById("statusDetail").textContent.includes("Side Panel"), "error explains protected page and panel reopen recovery");
     assert(doc.getElementById("destinations").hidden && doc.getElementById("pageText").hidden, "failed session exposes no stale capture to send");
     document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
   } catch (error) {

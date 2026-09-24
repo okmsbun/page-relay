@@ -104,7 +104,7 @@ function harness({
             state.disconnected = true;
           },
         }),
-        query: async () => [{ id: 1, windowId: 2 }],
+        query: async () => [{ id: state.activeId ?? 1, windowId: 2 }],
         sendMessage: async (_tab, message, options) => {
           assert.equal(options.frameId, 0);
           if (message.type === "fullPageCapture:text") return { ok: true, result: {
@@ -149,6 +149,13 @@ function harness({
   vm.runInContext(source, context);
   return { state, run: (expression) => vm.runInContext(expression, context) };
 }
+
+test("switching tabs while a segment is captured never stitches the wrong tab and restores the source", async () => {
+  const { run, state } = harness({ onCapture: (state) => { state.activeId = 9; } });
+  await assert.rejects(run("captureFullPage({id: 1, windowId: 2})"), /active tab changed/);
+  assert.ok(state.restored && state.disconnected);
+  assert.ok(state.canvases.every((canvas) => !canvas.rows?.some((row) => row !== undefined)));
+});
 
 for (const [height, viewport, scale] of [
   [2350, 800, 1],

@@ -73,7 +73,7 @@ test("Gemini activation failure before injection is a definite failure, not need
   assert.deepEqual(fixture.calls, []);
 });
 
-test("enabled provider dispatch and popup scripts agree; discovery-only providers cannot send", async () => {
+test("enabled provider dispatch and Side Panel scripts agree; discovery-only providers cannot send", async () => {
   const calls = [];
   const context = vm.createContext({ URL,
     deliverToChatGPT: async () => { calls.push("chatgpt"); return { sent: true }; },
@@ -83,7 +83,7 @@ test("enabled provider dispatch and popup scripts agree; discovery-only provider
   for (const file of ["ai-providers.js", "provider-delivery.js"]) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), context);
   }
-  const popup = fs.readFileSync(path.join(__dirname, "../popup.html"), "utf8");
+  const popup = fs.readFileSync(path.join(__dirname, "../sidepanel.html"), "utf8");
   const providers = vm.runInContext("AIProviders.all", context);
   const deliver = vm.runInContext("deliverToDestination", context);
   for (const provider of providers) {

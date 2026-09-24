@@ -7,13 +7,12 @@
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-body { width: 380px; margin: 0; padding: 22px; background: var(--bg); color: var(--text); }
-main { max-height: 500px; overflow-y: auto; scrollbar-width: thin; padding: 3px; margin: -3px; }
+body { width: 100%; min-height: 100vh; margin: 0; padding: 22px; background: var(--bg); color: var(--text); }
+main { min-width: 0; padding: 3px; margin: -3px; }
 button { font: inherit; cursor: pointer; }
 button:focus-visible, [tabindex]:focus-visible { outline: 3px solid #8396fa; outline-offset: 3px; }
 .header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
-.app-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; background: var(--text); color: var(--surface); box-shadow: 0 2px 4px #00000012; }
-.app-icon svg { width: 23px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.app-icon { width: 36px; height: 36px; flex-shrink: 0; object-fit: contain; }
 h1 { font-size: 15px; font-weight: 650; letter-spacing: -.35px; margin: 0; }
 .preview-card { overflow: hidden; border: 1px solid var(--line); background: var(--surface); border-radius: 15px; box-shadow: 0 3px 12px #17243a04; }
 .empty-state { padding: 28px 18px; text-align: center; }
@@ -102,8 +101,7 @@ body:has(#destinations:not([hidden])) .page-text[open] #textPreview { max-height
 .destination-feedback.discovery-only { color: var(--muted); }
 .no-destinations { padding: 9px 0; }
 .no-destinations h3 { font-size: 12px; font-weight: 600; margin: 0 0 5px; }
-.no-destinations p, .discovery-notices p { font-size: 11px; color: var(--muted); line-height: 1.5; margin: 0 0 7px; }
-.discovery-notices a { color: var(--accent); }
+.no-destinations p { font-size: 11px; color: var(--muted); line-height: 1.5; margin: 0 0 7px; }
 .destination-feedback.sent { color: var(--success); }
 .destination-feedback.busy { color: var(--muted); }
 .destination-feedback.failed, .destination-feedback.review { color: var(--error); }
