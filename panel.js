@@ -1,6 +1,10 @@
 const preview = document.getElementById("preview");
 
-const CAPTURE_INTERVAL_MS = 650;
+// Measured: Chrome allows at most 2 captureVisibleTab calls per second, so this interval
+// is the hard limit on segment speed once the page settles quickly. 550ms stays above the
+// 500ms quota floor with margin (a sliding 1s window never sees a third call) and was the
+// binding constraint after the settle wait was tightened.
+const CAPTURE_INTERVAL_MS = 550;
 const BOTTOM_WAIT_MS = 1500;
 const MAX_CAPTURE_SEGMENTS = 200;
 // Leave headroom for Chrome's canvas limits and memory, especially on Retina screens.
@@ -399,7 +403,7 @@ document.getElementById("zoomPreview").addEventListener("click", (event) => {
 });
 
 let captureStarted = false;
-async function startPopupCapture(sourceTab) {
+async function startPanelCapture(sourceTab) {
   if (captureStarted) return;
   captureStarted = true;
   destinationUI.suspend();

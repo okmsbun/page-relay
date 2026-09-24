@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+*~
+
+# Node / tooling (the extension itself has no runtime dependencies)
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+pnpm-lock.yaml
+
+# Test output, coverage and profiles
+coverage/
+.nyc_output/
+*.lcov
+test-results/
+*.log
+
+# Local environment / secrets
+.env
+.env.*
+*.local
+
+# Chrome test profiles and temporary artifacts
+chrome-profile/
+*.crx
+*.pem
+*.zip

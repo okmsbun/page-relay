@@ -1,11 +1,11 @@
 {
     "manifest_version": 3,
-    "name": "Page capture",
+    "name": "PageRelay",
     "version": "0.1.0",
     "minimum_chrome_version": "116",
-    "description": "Capture a page screenshot and text, then choose an AI conversation.",
+    "description": "Capture a full-page screenshot and rendered page text, then prepare that context in a supported AI chat.",
     "action": {
-        "default_title": "Page capture",
+        "default_title": "PageRelay",
         "default_icon": {
             "16": "assets/icons/icon-16.png",
             "32": "assets/icons/icon-32.png",
@@ -29,7 +29,6 @@
         "<all_urls>"
     ],
     "permissions": [
-        "activeTab",
         "scripting",
         "sidePanel",
         "storage",

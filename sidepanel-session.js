@@ -64,4 +64,4 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "captureSource:pinned") location.reload();
 });
 
-void startPopupCapture(resolveSourceTab());
+void startPanelCapture(resolveSourceTab());

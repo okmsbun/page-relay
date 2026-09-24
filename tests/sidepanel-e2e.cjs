@@ -1,10 +1,18 @@
-// Real-browser verification of the Side Panel capture-source flow.
+// OPT-IN, ISOLATED automated check - NOT live verification.
 //
-// Loads the unpacked extension into a real Chrome, clicks the extension action through
-// Chrome's own action pipeline (CDP Extensions.triggerAction, which delivers a genuine
-// toolbar click), keeps Chrome's native Side Panel open and reads the real panel
-// document. This is the regression that unit fixtures cannot see: a Side Panel cannot
-// borrow activeTab from the toolbar click, so the source page needs declared host access.
+// This script launches its own throwaway Chrome with a temporary, empty profile and
+// closes it when done. It never touches the user's normal profile or their open tabs,
+// and a pass here does NOT count as live verification of the four manual Side Panel
+// cases in INTEGRATIONS.md; those are performed by the user in their own Chrome.
+//
+// What it does check automatically: it loads the unpacked extension into that isolated
+// Chrome, clicks the extension action through Chrome's own action pipeline (CDP
+// Extensions.triggerAction, a genuine toolbar click), keeps Chrome's native Side Panel
+// open and reads the real panel document. It covers the regression that unit fixtures
+// cannot see: a Side Panel cannot borrow activeTab from the toolbar click, so the source
+// page needs declared host access.
+//
+// It opens a visible Chrome window while it runs; run it only when that is acceptable.
 //
 // Run: node tests/sidepanel-e2e.cjs                 (needs Chrome + network)
 //      CHROME_BIN=/path/to/chrome node tests/sidepanel-e2e.cjs
@@ -204,7 +212,7 @@ async function main() {
       JSON.stringify(manifest.host_permissions),
     );
     check(
-      ["activeTab", "scripting", "sidePanel", "storage", "tabs"].every((p) =>
+      ["scripting", "sidePanel", "storage", "tabs"].every((p) =>
         manifest.permissions.includes(p),
       ),
       "MV3 permissions present",

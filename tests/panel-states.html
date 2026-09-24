@@ -22,7 +22,7 @@
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const html = await (await fetch("../sidepanel.html")).text();
     const base = new URL("../", location.href).href;
-    let sourceId = 1, captureCalls = [], queries = 0, fail = false, discoveryFails = false, deepseekComposer = false, sourcePin = null;
+    let sourceId = 1, captureCalls = [], queries = 0, fail = false, discoveryFails = false, sourcePin = null;
     const chats = [
       { id: 10, windowId: 2, index: 1, title: "Extension debugging", url: "https://chatgpt.com/c/one", status: "complete", incognito: false },
       { id: 11, windowId: 3, index: 0, title: "Other discussion", url: "https://chatgpt.com/c/two", status: "complete", incognito: false },
@@ -38,13 +38,13 @@
     for (let y = 200; y < 2500; y += 150) { ctx.fillStyle = "white"; ctx.fillRect(30, y, 900, 110); }
     const png = image.toDataURL();
     // Fixtures install mocks before the real sidepanel-session.js runs.
-    window.configurePopupFixture = (win) => {
+    window.configurePanelFixture = (win) => {
       const sourceTab = (id) => ({ id, windowId: 2, url: "https://github.com/org/repo" });
       win.chrome = {
         tabs: {
           query: async (options) => { if (options.url) { if (discoveryFails) throw new Error("Test discovery error"); return chats; } queries++; assert(options.windowId === 2, "capture source queried in the panel's own window"); return [sourceTab(sourceId)]; },
           get: async (id) => chats.find((tab) => tab.id === id) ?? sourceTab(id),
-        }, scripting: { executeScript: async () => [{ result: deepseekComposer }] },
+        }, scripting: { executeScript: async () => [{}] },
         storage: { session: { get: async (key) => (sourcePin ? { [key]: sourcePin } : {}) } },
         runtime: { getURL: (file) => `chrome-extension://testextensionid/${file}`, onMessage: { addListener: (listener) => { win.__onPanelMessage = listener; } } },
         windows: { getCurrent: async () => ({ id: 2 }) }, extension: { isAllowedIncognitoAccess: async () => true }
@@ -59,25 +59,25 @@
         return { screenshot: png, text: "Hello <script>plain text<\/script>\nRevenue\nRevenue", characters: 49, estimatedTokens: 13 };
       };
     };
-    async function openPopup() {
+    async function openPanel() {
       const frame = document.createElement("iframe");
       frame.title = "Side Panel UI under test";
       const loaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
       frame.srcdoc = html.replace("<head>", '<head><base href="' + base + '">')
-        .replace('<script src="sidepanel-session.js">', '<script>parent.configurePopupFixture(window)<\/script><script src="sidepanel-session.js">');
+        .replace('<script src="sidepanel-session.js">', '<script>parent.configurePanelFixture(window)<\/script><script src="sidepanel-session.js">');
       document.getElementById("frames").replaceChildren(frame);
       await loaded;
       return { frame, win: frame.contentWindow, doc: frame.contentDocument };
     }
     try {
-      let { frame, win, doc } = await openPopup();
+      let { frame, win, doc } = await openPanel();
       assert(!doc.getElementById("takeScreenshot"), "no initial or recapture button");
       assert(doc.body.dataset.state === "capturing", "capture starts automatically on open");
-      assert(doc.getElementById("destinations").hidden, "sending unavailable while capturing");
+      assert(doc.getElementById("destinations").hidden, "adding unavailable while capturing");
       assert(!doc.getElementById("captureProgress").hidden, "progress visible");
       assert(doc.getElementById("textTokens").textContent === "~100 tokens", "live text estimate visible");
       sourceId = 99;
-      await win.startPopupCapture(Promise.resolve({ id: 99, windowId: 2 }));
+      await win.startPanelCapture(Promise.resolve({ id: 99, windowId: 2 }));
       await wait(220);
       assert(captureCalls.join(",") === "1" && queries === 1, "source pinned once and duplicate startup ignored");
       assert(doc.body.dataset.state === "success", "automatic capture completes");
@@ -101,7 +101,7 @@
       doc.getElementById("destination-10").click();
       chooseProvider("claude");
       assert(doc.querySelectorAll(".destination-row").length === 1 && !doc.getElementById("destination-13").disabled, "verified Claude is selectable");
-      assert(!doc.querySelector(".destination-feedback.discovery-only"), "verified Claude is not labelled discovery-only");
+      assert(!doc.querySelector(".destination-feedback.unavailable"), "verified Claude is not labelled unavailable");
       chooseProvider("gemini");
       assert(!doc.getElementById("destination-14").disabled, "verified Gemini is selectable");
       chooseProvider("chatgpt");
@@ -116,58 +116,67 @@
       frame.style.width = "380px";
       doc.getElementById("provider-chatgpt").dispatchEvent(new win.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
       assert(doc.getElementById("provider-claude").getAttribute("aria-selected") === "true", "keyboard arrow changes provider");
-      // The delivery is mocked below; this fixture never sends to a real provider.
+      // The preparation is mocked below; this fixture never touches a real provider.
       doc.getElementById("refreshDestinations").click(); await wait(30);
       doc.getElementById("destination-13").click();
       chooseProvider("chatgpt"); doc.getElementById("destination-11").click();
-      assert(doc.getElementById("sendCapture").textContent === "Send to 3 chats", "send count includes hidden providers");
+      assert(doc.getElementById("sendCapture").textContent === "Add to 3 chats", "add count includes hidden providers");
       assert(doc.querySelector("#provider-claude .provider-count").textContent === "1", "hidden provider selection count remains visible");
       const search = doc.getElementById("destinationSearch");
       search.value = "Extension"; search.dispatchEvent(new win.Event("input"));
       assert(doc.querySelectorAll(".destination-row").length === 1, "search filters active provider without discarding selection");
       const deliveries = [];
-      win.eval("destinationUI").configureDelivery(async (destination, capture) => {
+      win.eval("destinationUI").configurePreparation(async (destination, capture) => {
         deliveries.push(destination.id);
-        assert(capture.screenshot === png && capture.text.includes("Revenue"), "identical screenshot and text delivered");
+        assert(capture.screenshot === png && capture.text.includes("Revenue"), "identical screenshot and text added");
         if (destination.id === 11) throw new Error("Test failure");
-        return { sent: true };
+        return { prepared: true };
       });
-      assert(deliveries.length === 0, "selection alone never sends");
+      assert(deliveries.length === 0, "selection alone never adds anything");
       doc.getElementById("sendCapture").click(); await wait(60);
-      assert(deliveries.join(",") === "10,11,13", "send includes selected conversations on hidden provider tabs");
-      assert(doc.getElementById("destinationNote").textContent === "2 sent · 1 failed", "partial results summarized across providers");
+      assert(deliveries.join(",") === "10,11,13", "add includes selected conversations on hidden provider tabs");
+      assert(doc.getElementById("destinationNote").textContent === "2 added to a chat draft · 1 failed", "partial results summarized across providers");
       chooseProvider("claude");
-      assert(doc.querySelector(".destination-feedback.sent"), "hidden provider result retained");
+      assert(doc.querySelector(".destination-feedback.prepared"), "hidden provider result retained");
       chooseProvider("chatgpt");
-      assert(doc.querySelector(".destination-feedback.failed") && doc.querySelector(".destination-feedback.sent"), "independent results preserved");
-      assert(captureCalls.length === 1, "sending never recaptures the destination tab");
+      assert(doc.querySelector(".destination-feedback.failed") && doc.querySelector(".destination-feedback.prepared"), "independent results preserved");
+      assert(captureCalls.length === 1, "adding never recaptures the destination tab");
       const refresh = async () => { doc.getElementById("refreshDestinations").click(); await wait(30); };
       let generating = true;
       const retryCalls = [];
-      win.eval("destinationUI").configureDelivery(async (destination) => {
+      win.eval("destinationUI").configurePreparation(async (destination) => {
         retryCalls.push(destination.id);
-        if (destination.id === 11 && generating) throw Object.assign(new Error("Generating a response. Nothing was sent. Wait, then click Send again."), { busy: true, needsReview: false });
-        return { sent: true };
+        if (destination.id === 11 && generating) throw Object.assign(new Error("Generating a response. Nothing was added. Wait, then click Add again."), { busy: true, needsReview: false });
+        return { prepared: true };
       });
       chooseProvider("gemini"); doc.getElementById("destination-14").click();
       doc.getElementById("sendCapture").click(); await wait(60);
-      assert(retryCalls.join(",") === "11,14", "busy destination does not prevent other providers from sending");
-      assert(doc.getElementById("destinationNote").textContent === "1 sent · 1 busy (wait, then click Send again)", "busy is counted separately from failures");
+      assert(retryCalls.join(",") === "11,14", "busy destination does not prevent other providers from being prepared");
+      assert(doc.getElementById("destinationNote").textContent === "1 added to a chat draft · 1 busy (wait, then click Add again)", "busy is counted separately from failures");
       assert(doc.getElementById("provider-chatgpt").classList.contains("has-busy") && !doc.getElementById("provider-chatgpt").classList.contains("has-attention"), "hidden busy provider has a non-error indicator");
       chooseProvider("chatgpt");
       assert(doc.querySelector(".destination-feedback.busy summary").textContent.includes("Generating") && !doc.querySelector(".destination-feedback.failed"), "busy row is not labelled Failed");
       assert(doc.getElementById("destination-11").checked && !doc.getElementById("destination-11").disabled && !doc.getElementById("sendCapture").disabled, "busy destination stays selected and allows a manual retry");
       generating = false;
       await refresh(); await wait(60);
-      assert(retryCalls.join(",") === "11,14" && doc.querySelector(".destination-feedback.busy"), "refresh and elapsed time never automatically retry a busy send");
+      assert(retryCalls.join(",") === "11,14" && doc.querySelector(".destination-feedback.busy"), "refresh and elapsed time never automatically retry a busy chat");
       doc.getElementById("sendCapture").click(); await wait(60);
-      assert(retryCalls.join(",") === "11,14,11", "manual retry sends only the pending destination, never successful chats");
-      assert(!doc.querySelector(".destination-feedback.busy") && doc.getElementById("destination-11").disabled, "successful retry clears busy state and prevents another submission");
+      assert(retryCalls.join(",") === "11,14,11", "manual retry adds only the pending destination, never completed chats");
+      assert(!doc.querySelector(".destination-feedback.busy") && doc.getElementById("destination-11").disabled, "successful retry clears busy state and prevents another preparation");
       assert(captureCalls.length === 1, "busy retry reuses the original capture");
       const originalChats = chats.slice();
-      chats.splice(0, chats.length, originalChats[0], { id: 15, windowId: 3, index: 3, title: "DeepSeek chat", url: "https://chat.deepseek.com/a/chat/s/test", incognito: false });
+      chats.splice(0, chats.length, originalChats[0], { id: 15, windowId: 3, index: 3, title: "Claude chat two", url: "https://claude.ai/chat/six", incognito: false });
       await refresh();
-      assert(doc.querySelectorAll('[role="tab"]').length === 2 && doc.getElementById("provider-deepseek") && !doc.getElementById("provider-gemini"), "refresh removes closed providers and adds newly opened DeepSeek chat");
+      assert(doc.querySelectorAll('[role="tab"]').length === 2 && doc.getElementById("provider-claude") && !doc.getElementById("provider-gemini"), "refresh removes closed providers and adds newly opened chats");
+      // Providers without a complete, verified preparation integration are never listed.
+      chats.push(
+        { id: 17, windowId: 3, index: 4, title: "DeepSeek chat", url: "https://chat.deepseek.com/a/chat/s/test", incognito: false },
+        { id: 18, windowId: 3, index: 5, title: "Microsoft Copilot", url: "https://copilot.microsoft.com/chats/test", incognito: false },
+        { id: 19, windowId: 3, index: 6, title: "DeepSeek site", url: "https://www.deepseek.com/en/", incognito: false });
+      await refresh();
+      assert(!doc.getElementById("provider-deepseek") && !doc.getElementById("provider-copilot"), "removed providers are never listed");
+      assert(!doc.body.textContent.includes("Discovery only") && !doc.body.textContent.includes("not implemented"), "no partially implemented provider is exposed to users");
+      chats.splice(chats.length - 3, 3);
       chats.push(originalChats[4]); await refresh();
       chooseProvider("gemini");
       assert(doc.getElementById("destination-14"), "new Gemini conversation appears after refresh");
@@ -175,14 +184,8 @@
       assert(!doc.getElementById("provider-gemini") && doc.querySelector('[role="tab"][aria-selected="true"]'), "closing active provider selects a remaining provider");
       chats.splice(0); await refresh();
       assert(!doc.getElementById("noDestinations").hidden && doc.getElementById("noDestinations").textContent.includes("No AI chats open"), "zero chats shows compact empty state");
-      assert(doc.getElementById("providerTabs").hidden && doc.getElementById("destinationList").hidden && doc.getElementById("sendCapture").hidden && doc.getElementById("destinationSearch").hidden, "empty state hides tabs list search and Send");
+      assert(doc.getElementById("providerTabs").hidden && doc.getElementById("destinationList").hidden && doc.getElementById("sendCapture").hidden && doc.getElementById("destinationSearch").hidden, "empty state hides tabs list search and Add");
       assert(!doc.getElementById("refreshDestinations").disabled, "empty state keeps Refresh available");
-      chats.push({ id: 16, windowId: 2, index: 1, url: "https://www.deepseek.com/en/", incognito: false }); await refresh();
-      assert(doc.getElementById("providerTabs").hidden && !doc.getElementById("noDestinations").hidden, "DeepSeek marketing page without a composer leaves compact empty state");
-      deepseekComposer = true; await refresh();
-      assert(doc.getElementById("provider-deepseek") && doc.getElementById("destinationList").textContent.includes("New chat — DeepSeek"), "DeepSeek landing page with usable composer becomes a new-chat destination");
-      assert(!doc.body.textContent.includes("not in a chat"), "no misleading DeepSeek website warning");
-      deepseekComposer = false;
       discoveryFails = true; await refresh();
       assert(doc.getElementById("noDestinations").hidden && doc.getElementById("destinationNote").textContent.includes("Test discovery error"), "query failure is not misreported as no open chats");
       discoveryFails = false; chats.splice(0, chats.length, ...originalChats); await refresh();
@@ -191,9 +194,9 @@
       // A toolbar click pins the source before the panel opens; the pin must win over the
       // tab that happens to be active when the panel document loads.
       sourcePin = { id: 5, windowId: 2, url: "https://github.com/org/repo", pinnedAt: Date.now() };
-      ({ frame, win, doc } = await openPopup()); await wait(220);
+      ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(captureCalls.join(",") === "1,5" && queries === 1, "reopening captures the tab pinned by the toolbar click");
-      assert(doc.getElementById("sendCapture").disabled && !doc.querySelector(".destination-feedback.sent"), "new popup does not reuse selection or results");    // Clicking the toolbar icon while the panel is open restarts the session on that tab.
+      assert(doc.getElementById("sendCapture").disabled && !doc.querySelector(".destination-feedback.prepared"), "new panel session does not reuse selection or results");    // Clicking the toolbar icon while the panel is open restarts the session on that tab.
       win.__onPanelMessage({ type: "captureSource:pinned" });
       await wait(500);
       win = frame.contentWindow; doc = frame.contentDocument;
@@ -203,14 +206,14 @@
       }
       sourcePin = null; fail = true;
       frame.remove();
-      ({ frame, win, doc } = await openPopup()); await wait(220);
+      ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(doc.body.dataset.state === "error", "automatic capture errors are displayed");
       assert(doc.getElementById("statusDetail").textContent.includes("regular webpage") && doc.getElementById("statusDetail").textContent.includes("Side Panel"), "error explains protected page and panel reopen recovery");
-      assert(doc.getElementById("destinations").hidden && doc.getElementById("pageText").hidden, "failed session exposes no stale capture to send");
+      assert(doc.getElementById("destinations").hidden && doc.getElementById("pageText").hidden, "failed session exposes no stale capture to add");
       // A missing grant on a normal page is an access failure, not a protected page.
       fail = "permission";
       frame.remove();
-      ({ frame, win, doc } = await openPopup()); await wait(220);
+      ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(doc.body.dataset.state === "error", "access failures are displayed");
       assert(!/protect|regular webpage/i.test(doc.getElementById("statusDetail").textContent), "normal pages are never reported as protected");
       assert(doc.getElementById("statusDetail").textContent.includes("blocked access"), "access failure explains the missing grant");

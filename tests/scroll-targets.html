@@ -161,7 +161,7 @@
       await send("start");
       await send("scroll", { scrollY: 600 });
       disconnect();
-      assert(main.scrollTop === originalY, "popup disconnect restores internal scroll position");
+      assert(main.scrollTop === originalY, "panel disconnect restores internal scroll position");
 
       // Switch the same content to normal document flow to verify the fallback.
       document.documentElement.style.cssText = "height: auto; overflow: visible";

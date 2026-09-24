@@ -1,24 +1,28 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Page capture</title>
+  <title>PageRelay</title>
   <link rel="icon" type="image/png" sizes="32x32" href="assets/icons/icon-32.png">
-  <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="panel.css">
 </head>
+
 <body data-state="idle">
   <header class="header">
-    <img class="app-icon" src="assets/icons/icon-48.png" srcset="assets/icons/icon-48.png 1x, assets/icons/icon-128.png 2x" width="36" height="36" alt="">
-    <h1>Page capture</h1>
+    <img class="app-icon" src="assets/icons/icon-48.png"
+      srcset="assets/icons/icon-48.png 1x, assets/icons/icon-128.png 2x" width="36" height="36" alt="">
+    <h1>PageRelay</h1>
   </header>
 
   <main>
     <section class="preview-card" aria-label="Screenshot preview">
       <div id="previewToolbar" class="preview-toolbar" hidden>
         <span id="previewLabel">Screenshot</span>
-        <button id="zoomPreview" class="zoom-button" type="button" aria-pressed="false" aria-label="Show screenshot at actual size">100%</button>
+        <button id="zoomPreview" class="zoom-button" type="button" aria-pressed="false"
+          aria-label="Show screenshot at actual size">100%</button>
       </div>
       <div id="emptyState" class="empty-state">
         <h2>Preparing preview…</h2>
@@ -30,7 +34,10 @@
     </section>
 
     <details id="pageText" class="page-text" hidden>
-      <summary><span>Page text</span><span class="text-metrics"><strong id="textTokens" title="Estimated at roughly 4 characters per token">~0 tokens</strong><span id="textCharacters" class="text-characters">0 chars</span></span><span class="text-chevron" aria-hidden="true">⌄</span></summary>
+      <summary><span>Page text</span><span class="text-metrics"><strong id="textTokens"
+            title="Estimated at roughly 4 characters per token">~0 tokens</strong><span id="textCharacters"
+            class="text-characters">0 chars</span></span><span class="text-chevron" aria-hidden="true">⌄</span>
+      </summary>
       <div class="text-content">
         <p class="text-estimate">Tokens are estimated at roughly 4 characters each.</p>
         <pre id="textPreview" tabindex="0" aria-label="Extracted page text"></pre>
@@ -39,39 +46,48 @@
 
     <section class="capture-status" aria-live="polite" aria-atomic="true">
       <span class="status-icon" aria-hidden="true">
-        <svg viewBox="0 0 20 20"><path id="statusGlyph" d="M5 10l3 3 7-7"/></svg>
+        <svg viewBox="0 0 20 20">
+          <path id="statusGlyph" d="M5 10l3 3 7-7" />
+        </svg>
       </span>
-      <div><h2 id="statusTitle"></h2>
-        <p id="statusDetail"></p></div>
+      <div>
+        <h2 id="statusTitle"></h2>
+        <p id="statusDetail"></p>
+      </div>
     </section>
-    <div id="captureProgress" class="progress-track" role="progressbar" aria-label="Capture progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+    <div id="captureProgress" class="progress-track" role="progressbar" aria-label="Capture progress" aria-valuemin="0"
+      aria-valuemax="100" aria-valuenow="0" hidden>
       <div id="progressFill"></div>
     </div>
 
     <section id="destinations" class="destinations" aria-label="AI conversation destinations" hidden>
-      <div class="destination-heading"><h2>Send to</h2>
-        <button id="refreshDestinations" class="zoom-button" type="button">Refresh</button></div>
+      <div class="destination-heading">
+        <h2>Add to chat</h2>
+        <button id="refreshDestinations" class="zoom-button" type="button">Refresh</button>
+      </div>
       <div id="providerTabs" class="provider-tabs" role="tablist" aria-label="AI providers"></div>
       <div id="noDestinations" class="no-destinations" hidden>
         <h3>No AI chats open</h3>
         <p>Open an AI conversation in Chrome, then refresh.</p>
       </div>
-      <input id="destinationSearch" class="destination-search" type="search" placeholder="Find a conversation" aria-label="Find a conversation" hidden>
-      <div id="destinationList" class="destination-list" role="tabpanel" tabindex="0" aria-label="Open conversations"></div>
+      <input id="destinationSearch" class="destination-search" type="search" placeholder="Find a conversation"
+        aria-label="Find a conversation" hidden>
+      <div id="destinationList" class="destination-list" role="tabpanel" tabindex="0" aria-label="Open conversations">
+      </div>
       <p id="destinationNote" class="destination-note" role="status" aria-live="polite"></p>
       <button id="sendCapture" class="capture-button" type="button" disabled>Select conversations</button>
     </section>
   </main>
   <script src="capture-layout.js"></script>
   <script src="ai-providers.js"></script>
-  <script src="deepseek-discovery.js"></script>
   <script src="chat-destinations.js"></script>
   <script src="chatgpt-adapter.js"></script>
   <script src="claude-adapter.js"></script>
   <script src="gemini-adapter.js"></script>
   <script src="provider-delivery.js"></script>
   <script src="destinations-ui.js"></script>
-  <script src="popup.js"></script>
+  <script src="panel.js"></script>
   <script src="sidepanel-session.js"></script>
 </body>
+
 </html>

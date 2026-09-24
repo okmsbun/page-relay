@@ -1,6 +1,8 @@
 /* Isolated, opt-in UI integration. No cookies, private endpoints or API keys.
-   ChatGPT can change its DOM; unsupported states fail without a blind submission. */
-async function deliverToChatGPT(destination, capture) {
+   Preparation only: the screenshot, extracted text and prompt are placed in the composer
+   and the user submits. This extension never submits, presses Enter, or starts generation.
+   ChatGPT can change its DOM; unsupported states fail without mutating the chat. */
+async function prepareInChatGPT(destination, capture) {
   const deliveryId = crypto.randomUUID();
   const png = `page-${deliveryId}.png`;
   const txt = `page-${deliveryId}.txt`;
@@ -8,123 +10,231 @@ async function deliverToChatGPT(destination, capture) {
   // Revalidate immediately before injection; the script also checks location.
   await ChatDestinations.validate(destination);
   let results;
-  try { results = await chrome.scripting.executeScript({
-    target: { tabId: destination.id },
-    func: submitCaptureToComposer,
-    args: [{ expectedUrl: destination.url, screenshot: capture.screenshot,
-      text: capture.text, prompt, png, txt, deliveryId }],
-  }); } catch (error) {
-    // The tab may have closed after submitting. Do not offer an automatic retry.
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId: destination.id },
+      func: prepareCaptureInComposer,
+      args: [
+        {
+          expectedUrl: destination.url,
+          screenshot: capture.screenshot,
+          text: capture.text,
+          prompt,
+          png,
+          txt,
+          deliveryId,
+        },
+      ],
+    });
+  } catch (error) {
+    // The tab may have closed after the composer was changed. Do not retry blindly.
     error.needsReview = true;
     throw error;
   }
   const result = results[0]?.result;
-  if (!result?.sent) {
-    const error = new Error(result?.error || "Delivery could not be confirmed. Check this chat before retrying.");
-    error.needsReview = result?.needsReview ?? true;
-    error.busy = result?.busy === true && result.needsReview === false;
-    throw error;
-  }
-  return result;
+  if (result?.prepared) return result;
+  const error = new Error(
+    result?.error || "The capture could not be prepared in this chat.",
+  );
+  error.needsReview = result?.needsReview ?? true;
+  error.busy = result?.busy === true && result.needsReview === false;
+  throw error;
 }
 
-async function submitCaptureToComposer(payload) {
+async function prepareCaptureInComposer(payload) {
   let changed = false;
-  let submitted = false;
-  let attachmentsReady = false;
   let ownEdit = false;
   let userEdited = false;
+  let draftChanged = false;
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const visible = (element) => element && element.getClientRects().length > 0 &&
+  const visible = (element) =>
+    element &&
+    element.getClientRects().length > 0 &&
     getComputedStyle(element).visibility !== "hidden";
-  const currentUrl = () => `${location.origin}${location.pathname.replace(/\/+$/, "") || "/"}${location.search}`;
+  const currentUrl = () =>
+    `${location.origin}${location.pathname.replace(/\/+$/, "") || "/"}${location.search}`;
   const assertLocation = () => {
-    if (currentUrl() !== payload.expectedUrl) throw new Error("The conversation changed. Refresh and select it again.");
+    if (currentUrl() !== payload.expectedUrl)
+      throw new Error("The conversation changed. Refresh and select it again.");
   };
-  const enabled = (element) => visible(element) && !element.disabled && element.getAttribute("aria-disabled") !== "true";
+  const enabled = (element) =>
+    visible(element) &&
+    !element.disabled &&
+    element.getAttribute("aria-disabled") !== "true";
   // Rich-text editors rewrite paragraph breaks, NBSPs and invisible caret marks.
   // Normalize presentation only; never ignore missing/added words or punctuation.
-  const normalize = (text) => text.replace(/[\u200B\uFEFF]/g, "").replace(/\s+/g, " ").trim();
-  const composerText = (element) => normalize(element.value ?? element.innerText ?? "");
+  const normalize = (text) =>
+    text
+      .replace(/[\u200B\uFEFF]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  const composerText = (element) =>
+    normalize(element.value ?? element.innerText ?? "");
   const expectedText = normalize(payload.prompt);
   const getComposer = () => {
-    const matches = [...document.querySelectorAll("#prompt-textarea")].filter(visible);
+    const matches = [...document.querySelectorAll("#prompt-textarea")].filter(
+      visible,
+    );
     return matches.length === 1 ? matches[0] : null;
   };
-  const metadata = (root) => [...root.querySelectorAll("[title], [aria-label], img[alt]")]
-    .map((element) => [element.getAttribute("title"), element.getAttribute("aria-label"), element.getAttribute("alt")].join(" ")).join(" ") + root.innerText;
+  const metadata = (root) =>
+    [...root.querySelectorAll("[title], [aria-label], img[alt]")]
+      .map((element) =>
+        [
+          element.getAttribute("title"),
+          element.getAttribute("aria-label"),
+          element.getAttribute("alt"),
+        ].join(" "),
+      )
+      .join(" ") + root.innerText;
   const hasBothFiles = (root) => {
     const text = metadata(root);
     return text.includes(payload.png) && text.includes(payload.txt);
   };
+  const visibleProgress = (root) =>
+    [...root.querySelectorAll('[role="progressbar"], [aria-busy="true"]')].some(
+      visible,
+    );
   const observeUserEdit = (event) => {
-    if (!ownEdit && event.isTrusted && event.target.closest?.("#prompt-textarea")) userEdited = true;
+    if (
+      !ownEdit &&
+      event.isTrusted &&
+      event.target.closest?.("#prompt-textarea")
+    )
+      userEdited = true;
   };
-  const editEvents = ["beforeinput", "input", "paste", "drop", "compositionstart"];
-  // A matching outgoing turn is stronger evidence than the state of a composer
-  // that may have been reset, replaced, or moved to a new conversation URL.
-  const receipt = () => {
-    const messages = [...document.querySelectorAll('[data-message-author-role="user"]')];
-    const message = messages.find((node) => normalize(node.innerText).includes(expectedText) &&
-      node.innerText.includes(`[${payload.deliveryId}]`));
-    if (!message) return null;
-    const turn = message.closest('[data-testid^="conversation-turn-"]') || message;
-    return { sent: (submitted && attachmentsReady) || hasBothFiles(turn) };
-  };
-  const checkReceipt = async () => {
-    const found = receipt();
-    if (found?.sent) return found;
-    if (found) {
-      // The text and file thumbnails need not mount in the same render.
-      const complete = await waitForReceipt(2000);
-      if (complete) return complete;
-      throw new Error("Message found, but both attachments could not be verified. Check this chat before sending again.");
-    }
-    return null;
-  };
-  const waitForReceipt = async (duration) => {
+  const editEvents = [
+    "beforeinput",
+    "input",
+    "paste",
+    "drop",
+    "compositionstart",
+  ];
+  // Prepared means the site accepted both attachments and our prompt as a draft the user
+  // can review and submit: the file names are rendered, no upload is in progress, the
+  // composer still holds exactly our prompt, and the site's send control is usable.
+  const isPrepared = (form, composer) =>
+    hasBothFiles(form) &&
+    !visibleProgress(form) &&
+    composerText(composer) === expectedText &&
+    enabled(form.querySelector('[data-testid="send-button"]'));
+  // Waits for a prepared composer that stays prepared. A brief re-render of the draft is
+  // tolerated; a draft that stops holding our prompt is reported for review immediately.
+  // Nothing here ever submits.
+  async function waitUntilPrepared(duration, stableFor) {
     const deadline = Date.now() + duration;
-    do {
-      const found = receipt();
-      if (found?.sent) return found;
+    let since = 0;
+    let mismatchedSince = 0;
+    while (Date.now() < deadline) {
       await wait(250);
-    } while (Date.now() < deadline);
-    return null;
-  };
+      const composer = getComposer();
+      const form = composer?.closest("form");
+      const mismatch =
+        !form ||
+        currentUrl() !== payload.expectedUrl ||
+        composerText(composer) !== expectedText;
+      if (mismatch) {
+        mismatchedSince ||= Date.now();
+        since = 0;
+        if (userEdited || Date.now() - mismatchedSince >= 2000) {
+          draftChanged = true;
+          throw new Error(
+            "The draft changed while preparing attachments. Review this chat.",
+          );
+        }
+        continue;
+      }
+      mismatchedSince = 0;
+      if (isPrepared(form, composer)) {
+        since ||= Date.now();
+        if (Date.now() - since >= stableFor) return true;
+      } else since = 0;
+    }
+    return false;
+  }
   try {
     assertLocation();
-    if (globalThis.__pageCaptureSending) throw new Error("A capture is already being sent to this tab.");
+    if (globalThis.__pageCapturePreparing)
+      throw new Error("A capture is already being prepared in this tab.");
     let composer = getComposer();
-    let form = composer?.closest("form");
-    if (!visible(composer) || !form) throw new Error("ChatGPT’s message composer is unavailable. Open this chat and sign in, then retry.");
-    // Busy is retryable only here, before attaching, editing, or submitting.
-    if (document.querySelector('[data-testid="stop-button"]')) return {
-      sent: false, busy: true, needsReview: false,
-      error: "Generating a response. Nothing was sent. Wait for it to finish, then click Send again.",
-    };
-    if (composerText(composer)) throw new Error("This chat has an unsent draft. Send or clear it first.");
-    const removeButtons = () => [...form.querySelectorAll('button[aria-label]')].filter((button) =>
-      /remove.*(file|attachment|image)|(file|attachment|image).*remove/i.test(button.getAttribute("aria-label")));
-    if (removeButtons().length || form.querySelector('[data-testid*="attachment"], [data-testid*="file-thumbnail"]')) {
-      throw new Error("This chat already has attachments. Send or remove them first.");
+    const form = composer?.closest("form");
+    if (!visible(composer) || !form)
+      throw new Error(
+        "ChatGPT’s message composer is unavailable. Open this chat and sign in, then retry.",
+      );
+    // Busy is retryable only here, before attaching or editing anything.
+    if (document.querySelector('[data-testid="stop-button"]'))
+      return {
+        prepared: false,
+        busy: true,
+        needsReview: false,
+        error:
+          "Generating a response. Nothing was prepared. Wait for it to finish, then click Add again.",
+      };
+    if (composerText(composer))
+      throw new Error("This chat has an unsent draft. Send or clear it first.");
+    const removeButtons = () =>
+      [...form.querySelectorAll("button[aria-label]")].filter((button) =>
+        /remove.*(file|attachment|image)|(file|attachment|image).*remove/i.test(
+          button.getAttribute("aria-label"),
+        ),
+      );
+    if (
+      removeButtons().length ||
+      form.querySelector(
+        '[data-testid*="attachment"], [data-testid*="file-thumbnail"]',
+      )
+    ) {
+      throw new Error(
+        "This chat already has attachments. Send or remove them first.",
+      );
     }
     const accepts = (input, extension, mime) => {
-      const accepted = input.accept.toLowerCase().split(",").map((value) => value.trim());
-      return !input.accept || accepted.some((value) => value === "*" || value === "*/*" || value === extension ||
-        value === mime || value === mime.split("/")[0] + "/*");
+      const accepted = input.accept
+        .toLowerCase()
+        .split(",")
+        .map((value) => value.trim());
+      return (
+        !input.accept ||
+        accepted.some(
+          (value) =>
+            value === "*" ||
+            value === "*/*" ||
+            value === extension ||
+            value === mime ||
+            value === mime.split("/")[0] + "/*",
+        )
+      );
     };
-    const input = [...document.querySelectorAll('input[type="file"]')].find((element) =>
-      element.multiple && !element.disabled && accepts(element, ".png", "image/png") && accepts(element, ".txt", "text/plain"));
-    if (!input) throw new Error("ChatGPT’s file upload control is unavailable or has changed. No message was sent.");
-    if (input.files?.length) throw new Error("This chat already has files selected. Send or remove them first.");
-    if (!payload.screenshot.startsWith("data:image/png;base64,")) throw new Error("The captured screenshot is not a PNG.");
+    const input = [...document.querySelectorAll('input[type="file"]')].find(
+      (element) =>
+        element.multiple &&
+        !element.disabled &&
+        accepts(element, ".png", "image/png") &&
+        accepts(element, ".txt", "text/plain"),
+    );
+    if (!input)
+      throw new Error(
+        "ChatGPT’s file upload control is unavailable or has changed. Nothing was prepared.",
+      );
+    if (input.files?.length)
+      throw new Error(
+        "This chat already has files selected. Send or remove them first.",
+      );
+    if (!payload.screenshot.startsWith("data:image/png;base64,"))
+      throw new Error("The captured screenshot is not a PNG.");
     const binary = atob(payload.screenshot.split(",")[1]);
-    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const bytes = Uint8Array.from(binary, (character) =>
+      character.charCodeAt(0),
+    );
     const files = new DataTransfer();
     files.items.add(new File([bytes], payload.png, { type: "image/png" }));
-    files.items.add(new File([payload.text || ""], payload.txt, { type: "text/plain" }));
-    globalThis.__pageCaptureSending = payload.deliveryId;
-    for (const name of editEvents) document.addEventListener(name, observeUserEdit, true);
+    files.items.add(
+      new File([payload.text || ""], payload.txt, { type: "text/plain" }),
+    );
+    globalThis.__pageCapturePreparing = payload.deliveryId;
+    for (const name of editEvents)
+      document.addEventListener(name, observeUserEdit, true);
     // Everything above is read-only. From here on, leave uncertain drafts intact.
     changed = true;
     input.files = files.files;
@@ -133,56 +243,38 @@ async function submitCaptureToComposer(payload) {
     // Upload may synchronously replace the editor. Never write into a stale node
     // or overwrite text that appeared while attaching the files.
     composer = getComposer();
-    if (!composer || composerText(composer) || userEdited) throw new Error("The draft changed while attaching files. Check this chat.");
+    if (!composer || composerText(composer) || userEdited)
+      throw new Error(
+        "The draft changed while attaching files. Check this chat.",
+      );
     ownEdit = true;
     composer.focus();
     if (composer instanceof HTMLTextAreaElement) {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(composer, payload.prompt);
+      Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      ).set.call(composer, payload.prompt);
       composer.dispatchEvent(new Event("input", { bubbles: true }));
     } else {
       if (!document.execCommand("insertText", false, payload.prompt)) {
-        throw new Error("Could not fill the message composer. Check the attached files in this chat.");
+        throw new Error(
+          "Could not fill the message composer. Check the attached files in this chat.",
+        );
       }
     }
     ownEdit = false;
-    const deadline = Date.now() + 60000;
-    let readySince = 0;
-    while (Date.now() < deadline) {
-      await wait(250);
-      const accepted = await checkReceipt();
-      if (accepted) return accepted;
-      composer = getComposer();
-      form = composer?.closest("form");
-      if (userEdited || !form || currentUrl() !== payload.expectedUrl || composerText(composer) !== expectedText) {
-        // The app can clear/re-render its draft before the outgoing turn appears.
-        // Only wait for proof; do not refill the composer or click Send again.
-        const accepted = await waitForReceipt(2000);
-        if (accepted) return accepted;
-        throw new Error("The draft changed while preparing attachments. Review this chat.");
-      }
-      // File names must be present in rendered attachment metadata, not just our
-      // assigned FileList. Require both attachments and no visible upload progress.
-      const ready = hasBothFiles(form) &&
-        ![...form.querySelectorAll('[role="progressbar"], [aria-busy="true"]')].some(visible);
-      const send = form.querySelector('[data-testid="send-button"]');
-      if (ready && enabled(send)) {
-        readySince ||= Date.now();
-        if (Date.now() - readySince >= 1000) {
-          // The only submission; never retry this click automatically.
-          attachmentsReady = true;
-          submitted = true;
-          send.click();
-          const accepted = await waitForReceipt(15000);
-          if (accepted) return accepted;
-          throw new Error("Submission was attempted but not confirmed. Check this chat before sending again.");
-        }
-      } else readySince = 0;
-    }
-    throw new Error("Attachments did not become ready. Check this chat’s draft and upload status.");
+    if (await waitUntilPrepared(60000, 1000)) return { prepared: true };
+    throw new Error(
+      draftChanged
+        ? "The draft changed while preparing attachments. Review this chat."
+        : "The attachments did not become ready. Check this chat’s draft and upload status.",
+    );
   } catch (error) {
-    return { sent: false, needsReview: changed || submitted, error: error.message };
+    return { prepared: false, needsReview: changed, error: error.message };
   } finally {
-    for (const name of editEvents) document.removeEventListener(name, observeUserEdit, true);
-    if (globalThis.__pageCaptureSending === payload.deliveryId) delete globalThis.__pageCaptureSending;
+    for (const name of editEvents)
+      document.removeEventListener(name, observeUserEdit, true);
+    if (globalThis.__pageCapturePreparing === payload.deliveryId)
+      delete globalThis.__pageCapturePreparing;
   }
 }

@@ -16,14 +16,20 @@ const destinationUI = (() => {
   let busy = false;
   let discovering = false;
   let generation = 0;
-  // Only invoked by the explicit Send click, never by discovery or selection.
-  let delivery = deliverToDestination;
+  // Only invoked by the explicit Add click, never by discovery or selection.
+  let prepare = prepareInDestination;
 
   function updateButton() {
     const count = selection.size;
-    sendButton.textContent = busy ? "Sending…" : count ? `Send to ${count} ${count === 1 ? "chat" : "chats"}` : "Select conversations";
-    sendButton.disabled = busy || discovering || !count || !capture || !delivery;
-    sendButton.title = delivery ? "" : "Sending requires a delivery method to be configured.";
+    sendButton.textContent = busy
+      ? "Adding…"
+      : count
+        ? `Add to ${count} ${count === 1 ? "chat" : "chats"}`
+        : "Select conversations";
+    sendButton.disabled = busy || discovering || !count || !capture || !prepare;
+    sendButton.title = prepare
+      ? "The capture is added to the chat draft. You review and send it."
+      : "Adding requires a preparation method to be configured.";
   }
 
   function render() {
@@ -32,11 +38,23 @@ const destinationUI = (() => {
     emptyState.hidden = !noChats || discovering || discoveryError;
     list.hidden = sendButton.hidden = noChats;
     const query = search.value.trim().toLowerCase();
-    const providers = AIProviders.all.filter((provider) => destinations.some((item) => item.providerId === provider.id));
-    if (!providers.some((provider) => provider.id === activeProvider)) activeProvider = providers[0]?.id || null;
+    const providers = AIProviders.all.filter((provider) =>
+      destinations.some((item) => item.providerId === provider.id),
+    );
+    if (!providers.some((provider) => provider.id === activeProvider))
+      activeProvider = providers[0]?.id || null;
     renderTabs(providers);
-    list.setAttribute("aria-labelledby", activeProvider ? `provider-${activeProvider}` : "providerTabs");
-    const visible = destinations.filter((item) => item.providerId === activeProvider && `${item.providerName} ${item.title} ${item.label}`.toLowerCase().includes(query));
+    list.setAttribute(
+      "aria-labelledby",
+      activeProvider ? `provider-${activeProvider}` : "providerTabs",
+    );
+    const visible = destinations.filter(
+      (item) =>
+        item.providerId === activeProvider &&
+        `${item.providerName} ${item.title} ${item.label}`
+          .toLowerCase()
+          .includes(query),
+    );
     {
       const items = visible;
       for (const item of items) {
@@ -45,9 +63,18 @@ const destinationUI = (() => {
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.id = `destination-${item.id}`;
-        checkbox.setAttribute("aria-label", `${item.providerName}: ${item.title}, ${item.label}`);
+        checkbox.setAttribute(
+          "aria-label",
+          `${item.providerName}: ${item.title}, ${item.label}`,
+        );
         checkbox.checked = selection.has(item.id);
-        checkbox.disabled = busy || discovering || !!item.unavailable || ["sent", "review", "unsupported"].includes(statuses.get(item.id)?.state);
+        checkbox.disabled =
+          busy ||
+          discovering ||
+          !!item.unavailable ||
+          ["prepared", "review", "unsupported"].includes(
+            statuses.get(item.id)?.state,
+          );
         checkbox.addEventListener("change", () => {
           checkbox.checked ? selection.add(item.id) : selection.delete(item.id);
           renderTabs(providers);
@@ -66,9 +93,19 @@ const destinationUI = (() => {
         description.append(title, details);
         const status = statuses.get(item.id);
         if (status || item.unavailable) {
-          const state = status?.state || (item.discoveryOnly ? "discovery-only" : "unavailable");
-          const labels = { sent: "Sent", sending: "Sending…", busy: "Busy · Generating a response", failed: "Failed", review: "Needs review", unsupported: "Unsupported", unavailable: "Unavailable", "discovery-only": "Discovery only" };
-          const feedback = document.createElement(["sent", "sending"].includes(state) ? "span" : "details");
+          const state = status?.state || "unavailable";
+          const labels = {
+            prepared: "Added",
+            preparing: "Adding…",
+            busy: "Busy · Generating a response",
+            failed: "Failed",
+            review: "Needs review",
+            unsupported: "Unsupported",
+            unavailable: "Unavailable",
+          };
+          const feedback = document.createElement(
+            ["prepared", "preparing"].includes(state) ? "span" : "details",
+          );
           feedback.className = `destination-feedback ${state}`;
           if (feedback.tagName === "DETAILS") {
             const summary = document.createElement("summary");
@@ -86,7 +123,9 @@ const destinationUI = (() => {
     if (!visible.length) {
       const empty = document.createElement("p");
       empty.className = "destination-empty";
-      empty.textContent = destinations.length ? "No matching conversations." : "No AI conversations found. Open a chat, then refresh.";
+      empty.textContent = destinations.length
+        ? "No matching conversations."
+        : "No AI conversations found. Open a chat, then refresh.";
       list.append(empty);
     }
     search.hidden = noChats || (destinations.length < 5 && !search.value);
@@ -105,7 +144,9 @@ const destinationUI = (() => {
 
   function renderTabs(providers) {
     const scroll = tabs.scrollLeft;
-    const focused = tabs.contains(document.activeElement) ? document.activeElement.id : null;
+    const focused = tabs.contains(document.activeElement)
+      ? document.activeElement.id
+      : null;
     tabs.replaceChildren();
     for (const provider of providers) {
       const tab = document.createElement("button");
@@ -119,41 +160,70 @@ const destinationUI = (() => {
       const icon = document.createElement("span");
       icon.className = `provider-icon provider-icon-${provider.id}`;
       icon.setAttribute("aria-hidden", "true");
-      icon.textContent = { chatgpt: "◎", claude: "✳", gemini: "✦", deepseek: "D", copilot: "C" }[provider.id];
-      const favicon = destinations.find((item) => item.providerId === provider.id && item.favicon)?.favicon;
+      icon.textContent = {
+        chatgpt: "◎",
+        claude: "✳",
+        gemini: "✦",
+      }[provider.id];
+      const favicon = destinations.find(
+        (item) => item.providerId === provider.id && item.favicon,
+      )?.favicon;
       if (favicon) {
         const image = document.createElement("img");
-        image.alt = ""; image.referrerPolicy = "no-referrer";
-        image.addEventListener("load", () => icon.replaceChildren(image), { once: true });
+        image.alt = "";
+        image.referrerPolicy = "no-referrer";
+        image.addEventListener("load", () => icon.replaceChildren(image), {
+          once: true,
+        });
         image.src = favicon;
       }
       const label = document.createElement("span");
       label.textContent = provider.name;
       tab.append(icon, label);
-      const count = destinations.filter((item) => item.providerId === provider.id && selection.has(item.id)).length;
+      const count = destinations.filter(
+        (item) => item.providerId === provider.id && selection.has(item.id),
+      ).length;
       if (count) {
         const badge = document.createElement("span");
-        badge.className = "provider-count"; badge.textContent = count;
+        badge.className = "provider-count";
+        badge.textContent = count;
         tab.append(badge);
       }
-      const results = destinations.filter((item) => item.providerId === provider.id).map((item) => statuses.get(item.id)?.state);
-      tab.classList.toggle("has-attention", results.some((state) => ["failed", "review"].includes(state)));
+      const results = destinations
+        .filter((item) => item.providerId === provider.id)
+        .map((item) => statuses.get(item.id)?.state);
+      tab.classList.toggle(
+        "has-attention",
+        results.some((state) => ["failed", "review"].includes(state)),
+      );
       tab.classList.toggle("has-busy", results.includes("busy"));
-      tab.title = [provider.name, count ? `${count} selected` : "", ...new Set(results.filter(Boolean))].filter(Boolean).join(" · ");
+      tab.title = [
+        provider.name,
+        count ? `${count} selected` : "",
+        ...new Set(results.filter(Boolean)),
+      ]
+        .filter(Boolean)
+        .join(" · ");
       tab.setAttribute("aria-label", tab.title);
       tab.addEventListener("click", () => selectProvider(provider.id));
       tab.addEventListener("keydown", (event) => {
         const index = providers.indexOf(provider);
-        const next = { ArrowRight: (index + 1) % providers.length, ArrowLeft: (index - 1 + providers.length) % providers.length,
-          Home: 0, End: providers.length - 1 }[event.key];
+        const next = {
+          ArrowRight: (index + 1) % providers.length,
+          ArrowLeft: (index - 1 + providers.length) % providers.length,
+          Home: 0,
+          End: providers.length - 1,
+        }[event.key];
         if (next === undefined) return;
-        event.preventDefault(); selectProvider(providers[next].id, true);
+        event.preventDefault();
+        selectProvider(providers[next].id, true);
       });
       tabs.append(tab);
     }
     tabs.hidden = !providers.length;
     tabs.scrollLeft = scroll;
-    if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
+    if (focused)
+      document.getElementById(focused)?.focus({ preventScroll: true });
   }
 
   async function refresh() {
@@ -170,44 +240,106 @@ const destinationUI = (() => {
       if (version !== generation) return;
       const found = overview.destinations;
       const previous = new Map(destinations.map((item) => [item.id, item]));
-      selection = new Set(found.filter((item) => selection.has(item.id) && !item.unavailable &&
-        previous.get(item.id)?.url === item.url && previous.get(item.id)?.incognito === item.incognito).map((item) => item.id));
-      statuses = new Map(found.filter((item) => previous.get(item.id)?.url === item.url ||
-        (["sent", "review"].includes(statuses.get(item.id)?.state) && previous.get(item.id)?.providerId === item.providerId))
-        .filter((item) => statuses.has(item.id)).map((item) => [item.id, statuses.get(item.id)]));
+      selection = new Set(
+        found
+          .filter(
+            (item) =>
+              selection.has(item.id) &&
+              !item.unavailable &&
+              previous.get(item.id)?.url === item.url &&
+              previous.get(item.id)?.incognito === item.incognito,
+          )
+          .map((item) => item.id),
+      );
+      statuses = new Map(
+        found
+          .filter(
+            (item) =>
+              previous.get(item.id)?.url === item.url ||
+              (["prepared", "review"].includes(statuses.get(item.id)?.state) &&
+                previous.get(item.id)?.providerId === item.providerId),
+          )
+          .filter((item) => statuses.has(item.id))
+          .map((item) => [item.id, statuses.get(item.id)]),
+      );
       destinations = found;
-      note.textContent = delivery ? "" : "Selection available. Sending setup is pending.";
+      note.textContent = prepare
+        ? ""
+        : "Selection available. Preparation setup is pending.";
       render();
     } catch (error) {
       if (version !== generation) return;
       discoveryError = true;
-      selection.clear(); destinations = []; render();
+      selection.clear();
+      destinations = [];
+      render();
       note.textContent = `Could not find conversations: ${error.message}`;
     } finally {
-      if (version === generation) { discovering = false; refreshButton.disabled = false; render(); }
+      if (version === generation) {
+        discovering = false;
+        refreshButton.disabled = false;
+        render();
+      }
     }
   }
 
   sendButton.addEventListener("click", async () => {
-    if (busy || discovering || !capture || !delivery || !selection.size) return;
-    const chosen = destinations.filter((item) => selection.has(item.id) && !item.unavailable &&
-      !["sent", "review", "unsupported"].includes(statuses.get(item.id)?.state));
+    if (busy || discovering || !capture || !prepare || !selection.size) return;
+    const chosen = destinations.filter(
+      (item) =>
+        selection.has(item.id) &&
+        !item.unavailable &&
+        !["prepared", "review", "unsupported"].includes(
+          statuses.get(item.id)?.state,
+        ),
+    );
     busy = true;
     refreshButton.disabled = search.disabled = true;
-    note.textContent = "Keep the Side Panel open while sending.";
+    note.textContent = "Keep the Side Panel open while the capture is added.";
     try {
-      const results = await ChatDestinations.sendSelected(chosen, capture, delivery, (id, result) => {
-        statuses.set(id, result);
-        if (["sent", "review", "unsupported", "unavailable"].includes(result.state)) selection.delete(id);
-        render();
-      });
-      const sent = results.filter((result) => result.state === "sent").length;
-      const review = results.filter((result) => result.state === "review").length;
-      const unsupported = results.filter((result) => result.state === "unsupported").length;
-      const unavailable = results.filter((result) => result.state === "unavailable").length;
-      const waiting = results.filter((result) => result.state === "busy").length;
-      const failed = results.filter((result) => result.state === "failed").length;
-      note.textContent = [`${sent} sent`, waiting ? `${waiting} busy (wait, then click Send again)` : "", failed ? `${failed} failed` : "", review ? `${review} need review` : "", unsupported ? `${unsupported} unsupported` : "", unavailable ? `${unavailable} unavailable` : ""].filter(Boolean).join(" · ");
+      const results = await ChatDestinations.prepareSelected(
+        chosen,
+        capture,
+        prepare,
+        (id, result) => {
+          statuses.set(id, result);
+          if (
+            ["prepared", "review", "unsupported", "unavailable"].includes(
+              result.state,
+            )
+          )
+            selection.delete(id);
+          render();
+        },
+      );
+      const prepared = results.filter(
+        (result) => result.state === "prepared",
+      ).length;
+      const review = results.filter(
+        (result) => result.state === "review",
+      ).length;
+      const unsupported = results.filter(
+        (result) => result.state === "unsupported",
+      ).length;
+      const unavailable = results.filter(
+        (result) => result.state === "unavailable",
+      ).length;
+      const waiting = results.filter(
+        (result) => result.state === "busy",
+      ).length;
+      const failed = results.filter(
+        (result) => result.state === "failed",
+      ).length;
+      note.textContent = [
+        `${prepared} added to a chat draft`,
+        waiting ? `${waiting} busy (wait, then click Add again)` : "",
+        failed ? `${failed} failed` : "",
+        review ? `${review} need review` : "",
+        unsupported ? `${unsupported} unsupported` : "",
+        unavailable ? `${unavailable} unavailable` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
     } finally {
       busy = false;
       refreshButton.disabled = search.disabled = false;
@@ -220,12 +352,26 @@ const destinationUI = (() => {
   return {
     async show(result) {
       capture = result;
-      selection.clear(); statuses.clear(); search.value = "";
+      selection.clear();
+      statuses.clear();
+      search.value = "";
       section.hidden = false;
       await refresh();
     },
-    suspend() { ++generation; discovering = false; section.hidden = true; },
-    resume() { if (capture) { section.hidden = false; void refresh(); } },
-    configureDelivery(adapter) { delivery = adapter; updateButton(); },
+    suspend() {
+      ++generation;
+      discovering = false;
+      section.hidden = true;
+    },
+    resume() {
+      if (capture) {
+        section.hidden = false;
+        void refresh();
+      }
+    },
+    configurePreparation(adapter) {
+      prepare = adapter;
+      updateButton();
+    },
   };
 })();

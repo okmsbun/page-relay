@@ -4,7 +4,30 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const path = require("node:path");
 
-const source = fs.readFileSync(path.join(__dirname, "../popup.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "../panel.js"), "utf8");
+// Chrome allows at most two captureVisibleTab calls per second, so the panel's interval
+// must stay above the 500ms quota floor; the harness throttles exactly like the panel.
+const CAPTURE_INTERVAL_MS = Number(
+  /const CAPTURE_INTERVAL_MS = (\d+);/.exec(source)?.[1],
+);
+test("capture interval respects Chrome's capture quota", () => {
+  assert.ok(
+    CAPTURE_INTERVAL_MS >= 500 && CAPTURE_INTERVAL_MS < 1000,
+    String(CAPTURE_INTERVAL_MS),
+  );
+});
+// The page-side settle window must stay conservative: it is the evidence that a
+// position is stable before its pixels are saved.
+const CONTENT_SOURCE = fs.readFileSync(
+  path.join(__dirname, "../content.js"),
+  "utf8",
+);
+const POLL_MS = Number(/const POLL_MS = (\d+);/.exec(CONTENT_SOURCE)?.[1]);
+const QUIET_MS = Number(/const QUIET_MS = (\d+);/.exec(CONTENT_SOURCE)?.[1]);
+test("content script keeps a conservative settle window", () => {
+  assert.ok(QUIET_MS >= 250, `QUIET_MS ${QUIET_MS}`);
+  assert.ok(POLL_MS >= 25 && POLL_MS <= 100, `POLL_MS ${POLL_MS}`);
+});
 
 // A fake capture contains its document pixel row numbers. Stitching must preserve
 // every row exactly once, even when the browser clamps the last scroll position.
@@ -59,7 +82,11 @@ function harness({
       queueMicrotask(callback);
     },
     document: {
-      getElementById: () => ({ style: {}, addEventListener() {}, setAttribute() {} }),
+      getElementById: () => ({
+        style: {},
+        addEventListener() {},
+        setAttribute() {},
+      }),
       createElement() {
         const canvas = {
           rows: [],
@@ -107,9 +134,17 @@ function harness({
         query: async () => [{ id: state.activeId ?? 1, windowId: 2 }],
         sendMessage: async (_tab, message, options) => {
           assert.equal(options.frameId, 0);
-          if (message.type === "fullPageCapture:text") return { ok: true, result: {
-            text: "Rendered text", characters: 13, estimatedTokens: 4, title: "Test page", url: "https://example.test/",
-          } };
+          if (message.type === "fullPageCapture:text")
+            return {
+              ok: true,
+              result: {
+                text: "Rendered text",
+                characters: 13,
+                estimatedTokens: 4,
+                title: "Test page",
+                url: "https://example.test/",
+              },
+            };
           if (message.type === "fullPageCapture:select") {
             state.regionIndex = message.index;
             ({ viewport, crop } = regions[message.index]);
@@ -121,7 +156,11 @@ function harness({
               0,
               Math.min(message.scrollY, state.height - viewport),
             );
-            state.events.push({ type: "scroll", y: state.y, region: state.regionIndex });
+            state.events.push({
+              type: "scroll",
+              y: state.y,
+              region: state.regionIndex,
+            });
           }
           if (message.type === "fullPageCapture:start") state.y = 0;
           if (message.type === "fullPageCapture:restore") state.restored = true;
@@ -131,7 +170,10 @@ function harness({
         captureVisibleTab: async () => {
           const previous = state.captures.at(-1);
           if (previous)
-            assert.ok(state.time - previous.time >= 650, "Capture throttle");
+            assert.ok(
+              state.time - previous.time >= CAPTURE_INTERVAL_MS - 1,
+              "Capture throttle",
+            );
           const shot = {
             top: Math.round(state.y * scale) - Math.round(crop.y * scale),
             time: state.time,
@@ -139,7 +181,11 @@ function harness({
             width: Math.round(100 * scale),
           };
           state.captures.push(shot);
-          state.events.push({ type: "capture", y: state.y, region: state.regionIndex });
+          state.events.push({
+            type: "capture",
+            y: state.y,
+            region: state.regionIndex,
+          });
           await onCapture?.(state);
           return JSON.stringify(shot);
         },
@@ -151,10 +197,21 @@ function harness({
 }
 
 test("switching tabs while a segment is captured never stitches the wrong tab and restores the source", async () => {
-  const { run, state } = harness({ onCapture: (state) => { state.activeId = 9; } });
-  await assert.rejects(run("captureFullPage({id: 1, windowId: 2})"), /active tab changed/);
+  const { run, state } = harness({
+    onCapture: (state) => {
+      state.activeId = 9;
+    },
+  });
+  await assert.rejects(
+    run("captureFullPage({id: 1, windowId: 2})"),
+    /active tab changed/,
+  );
   assert.ok(state.restored && state.disconnected);
-  assert.ok(state.canvases.every((canvas) => !canvas.rows?.some((row) => row !== undefined)));
+  assert.ok(
+    state.canvases.every(
+      (canvas) => !canvas.rows?.some((row) => row !== undefined),
+    ),
+  );
 });
 
 for (const [height, viewport, scale] of [
@@ -289,8 +346,16 @@ test("oversized canvases report an error and restore state", async () => {
 
 test("multiple areas are captured once each, then composed with the first app frame", async () => {
   const regions = [
-    { height: 1550, viewport: 400, crop: { x: 30, y: 100, width: 70, height: 400 } },
-    { height: 1000, viewport: 450, crop: { x: 0, y: 50, width: 20, height: 450 } },
+    {
+      height: 1550,
+      viewport: 400,
+      crop: { x: 30, y: 100, width: 70, height: 400 },
+    },
+    {
+      height: 1000,
+      viewport: 450,
+      crop: { x: 0, y: 50, width: 20, height: 450 },
+    },
   ];
   const { run, state } = harness({ ...regions[0], windowHeight: 800, regions });
   const result = await run("captureFullPage({id: 1, windowId: 2})");
@@ -303,8 +368,12 @@ test("multiple areas are captured once each, then composed with the first app fr
     assert.equal(canvas.rows.length, regions[index].height);
     canvas.rows.forEach((value, row) => assert.equal(value, row));
     const events = state.events.filter((event) => event.region === index);
-    assert.equal(events.filter((e) => e.type === "capture" && e.y === 0).length, 1);
-    for (let i = 1; i < events.length; i++) assert.ok(events[i].y >= events[i - 1].y);
+    assert.equal(
+      events.filter((e) => e.type === "capture" && e.y === 0).length,
+      1,
+    );
+    for (let i = 1; i < events.length; i++)
+      assert.ok(events[i].y >= events[i - 1].y);
   }
   assert.equal(state.composed.shell.top, -100);
   assert.ok(state.restored && state.disconnected);
@@ -312,15 +381,38 @@ test("multiple areas are captured once each, then composed with the first app fr
 
 test("geometry comparison allows lazy height growth but rejects crop/viewport movement", () => {
   const { run } = harness();
-  const geometry = { viewportHeight: 400, viewportWidth: 70, windowHeight: 800, windowWidth: 100,
-    documentHeight: 2000, scrollX: 0, scrollY: 0, crop: { x: 30, y: 100, width: 70, height: 400 } };
-  const compare = (fn, other) => run(`${fn}(${JSON.stringify(geometry)}, ${JSON.stringify(other)})`);
+  const geometry = {
+    viewportHeight: 400,
+    viewportWidth: 70,
+    windowHeight: 800,
+    windowWidth: 100,
+    documentHeight: 2000,
+    scrollX: 0,
+    scrollY: 0,
+    crop: { x: 30, y: 100, width: 70, height: 400 },
+  };
+  const compare = (fn, other) =>
+    run(`${fn}(${JSON.stringify(geometry)}, ${JSON.stringify(other)})`);
   assert.ok(compare("sameGeometry", { ...geometry, documentHeight: 2500 }));
-  assert.equal(compare("sameViewport", { ...geometry, documentHeight: 2500 }), false);
-  for (const key of ["viewportHeight", "viewportWidth", "windowHeight", "windowWidth"]) {
-    assert.equal(compare("sameGeometry", { ...geometry, [key]: geometry[key] + 1 }), false);
+  assert.equal(
+    compare("sameViewport", { ...geometry, documentHeight: 2500 }),
+    false,
+  );
+  for (const key of [
+    "viewportHeight",
+    "viewportWidth",
+    "windowHeight",
+    "windowWidth",
+  ]) {
+    assert.equal(
+      compare("sameGeometry", { ...geometry, [key]: geometry[key] + 1 }),
+      false,
+    );
   }
-  assert.equal(compare("sameGeometry", { ...geometry, crop: { ...geometry.crop, x: 31 } }), false);
+  assert.equal(
+    compare("sameGeometry", { ...geometry, crop: { ...geometry.crop, x: 31 } }),
+    false,
+  );
   assert.equal(compare("sameViewport", { ...geometry, scrollY: 400 }), false);
 });
 
@@ -359,7 +451,9 @@ function pageHarness({ imageReadyAt = 900, fontsReadyAt = 1200 } = {}) {
     window,
     PageTextCollector: class {
       sample() {}
-      stats() { return { characters: 0, estimatedTokens: 0 }; }
+      stats() {
+        return { characters: 0, estimatedTokens: 0 };
+      }
     },
     innerWidth: 100,
     innerHeight: 800,
@@ -439,9 +533,10 @@ test("content script waits for visible images, fonts and a quiet interval", asyn
   const { send, state, root, window } = pageHarness();
   await send("start");
   assert.ok(
-    state.time >= 1500,
-    "Does not capture pending resources after only 150 ms",
+    state.time >= 900 + QUIET_MS,
+    "Waits for the pending visible image and the quiet interval",
   );
+  assert.ok(state.time >= 1200, "Waits for document fonts");
   assert.equal(window.scrollY, 0);
   await send("restore");
   assert.equal(window.scrollY, 177);
@@ -457,7 +552,7 @@ test("a visible image that never finishes produces a bounded error", async () =>
   assert.equal(window.scrollY, 177);
 });
 
-test("closing the popup during a wait cancels work and restores styles", async () => {
+test("closing the panel during a wait cancels work and restores styles", async () => {
   const { send, disconnect, window, root } = pageHarness();
   const pending = send("start");
   disconnect();

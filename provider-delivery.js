@@ -1,9 +1,19 @@
-/* Route sends only to explicitly enabled, verified integration adapters. */
-async function deliverToDestination(destination, capture) {
-  const adapters = { chatgpt: deliverToChatGPT, claude: deliverToClaude, gemini: deliverToGemini };
+/* Route composer preparation only to providers with a verified integration adapter.
+   Adapters attach the capture and insert the prompt; they never submit a message. */
+async function prepareInDestination(destination, capture) {
+  const adapters = {
+    chatgpt: prepareInChatGPT,
+    claude: prepareInClaude,
+    gemini: prepareInGemini,
+  };
   const adapter = adapters[destination.providerId];
-  if (!AIProviders.get(destination.providerId)?.sending || !adapter) {
-    const error = new Error(AIProviders.get(destination.providerId)?.limitation || "No sending adapter is available for this provider.");
+  if (
+    !AIProviders.supported(AIProviders.get(destination.providerId)) ||
+    !adapter
+  ) {
+    const error = new Error(
+      "No composer-preparation integration is available for this provider.",
+    );
     error.unavailable = true;
     throw error;
   }

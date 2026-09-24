@@ -83,7 +83,7 @@ async function runPanelSession({ pin, tabs, toggles = {} }) {
         },
       },
     },
-    startPopupCapture: async (source) => {
+    startPanelCapture: async (source) => {
       try {
         captures.push(await source);
       } catch (error) {
@@ -102,6 +102,7 @@ async function runPanelSession({ pin, tabs, toggles = {} }) {
 
 test("native global Side Panel replaces the action popup", () => {
   assert.equal(manifest.action.default_popup, undefined);
+  assert.equal(manifest.name, "PageRelay");
   assert.equal(manifest.side_panel.default_path, "sidepanel.html");
   assert.ok(fs.existsSync(path.join(root, manifest.side_panel.default_path)));
 });

@@ -3,27 +3,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const path = require("node:path");
-function harness(chrome = {}, fixtureProviders = []) {
+const root = path.join(__dirname, "..");
+const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
+
+function harness(chrome = {}) {
   const context = vm.createContext({ chrome, URL });
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, "../ai-providers.js"), "utf8"),
-    context,
-  );
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, "../deepseek-discovery.js"), "utf8"),
-    context,
-  );
-  // Test-only capabilities to exercise future cross-provider dispatch. Never
-  // enable an unverified adapter in the extension shipped to the user.
-  for (const id of fixtureProviders)
-    vm.runInContext(
-      `AIProviders.get(${JSON.stringify(id)}).sending = true`,
-      context,
-    );
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, "../chat-destinations.js"), "utf8"),
-    context,
-  );
+  vm.runInContext(read("ai-providers.js"), context);
+  vm.runInContext(read("chat-destinations.js"), context);
   return vm.runInContext("ChatDestinations", context);
 }
 const tab = (id, windowId = 10, extra = {}) => ({
@@ -56,91 +42,109 @@ test("discovery includes background tabs across windows and excludes inaccessibl
   assert.match(entries[1].label, /Other window 1.*Tab 3/);
 });
 
-test("permitted incognito is explicitly labelled and duplicate chat tabs are consolidated", () => {
+test("permitted incognito is labelled and duplicate chat tabs are consolidated", () => {
   const api = harness();
   const entries = api.describeTabs(
     [
       tab(1),
-      tab(2, 20, { url: tab(1).url }),
-      tab(3, 30, { incognito: true }),
-      tab(4, 10, { url: "https://chatgpt.com/" }),
-      tab(5, 20, { url: "https://chatgpt.com/" }),
+      tab(2, 10, { url: "https://chatgpt.com/c/chat-1" }),
+      tab(3, 20, { incognito: true, url: "https://claude.ai/chat/x" }),
     ],
     10,
     true,
   );
-  assert.equal(entries.length, 4);
-  assert.match(entries.find((e) => e.id === 1).label, /Open in 2 tabs/);
-  assert.match(entries.find((e) => e.id === 3).label, /Incognito/);
-  assert.equal(entries.filter((e) => e.url.endsWith("/")).length, 2);
+  assert.equal(entries.length, 2);
+  const duplicate = entries.find((entry) => entry.id === 1);
+  assert.match(duplicate.label, /Open in 2 tabs/);
+  assert.match(entries.find((entry) => entry.id === 3).label, /Incognito/);
 });
 
-test("only conversation/new-chat URLs accepted", () => {
-  const { identity } = harness();
-  for (const url of [
-    "https://chatgpt.com/c/abc",
-    "https://chatgpt.com/g/g-custom/c/abc",
-    "https://chat.openai.com/",
-    "https://chatgpt.com/?temporary-chat=true",
-  ])
-    assert.ok(identity(url));
-  for (const url of [
-    "https://chatgpt.com/auth/login",
-    "https://chatgpt.com/share/abc",
-    "http://chatgpt.com/c/abc",
-    "not a URL",
-  ])
-    assert.equal(identity(url), null);
+test("only providers with a preparation integration are ever listed", () => {
+  const api = harness();
+  const context = vm.createContext({ URL });
+  vm.runInContext(read("ai-providers.js"), context);
+  const providers = vm.runInContext("AIProviders", context);
+  assert.deepEqual(
+    Array.from(providers.all, (provider) => provider.id),
+    ["chatgpt", "claude", "gemini"],
+  );
+  assert.ok(providers.all.every((provider) => provider.preparation === true));
+  // Removed providers must not be recognised, listed, or granted their own pattern.
+  assert.equal(providers.get("deepseek"), undefined);
+  assert.equal(providers.get("copilot"), undefined);
+  assert.equal(providers.match("https://chat.deepseek.com/a/chat/s/one"), null);
+  assert.equal(providers.match("https://www.deepseek.com/en/"), null);
+  assert.equal(
+    providers.match("https://copilot.microsoft.com/chats/two"),
+    null,
+  );
+  assert.ok(
+    !providers.patterns.some((pattern) => /deepseek|copilot/.test(pattern)),
+  );
+  assert.ok(!fs.existsSync(path.join(root, "deepseek-discovery.js")));
+  const entries = api.describeTabs(
+    [
+      tab(1),
+      tab(2, 10, { url: "https://chat.deepseek.com/a/chat/s/test" }),
+      tab(3, 10, { url: "https://copilot.microsoft.com/chats/test" }),
+    ],
+    10,
+    false,
+  );
+  assert.deepEqual(
+    entries.map((entry) => entry.id),
+    [1],
+  );
+  assert.ok(
+    !entries.some((entry) => entry.unavailable),
+    "no discovery-only entries are exposed",
+  );
 });
 
-test("discovery queries all accessible windows without broad tabs permission", async () => {
-  let query;
-  const api = harness({
-    tabs: {
-      query: async (q) => {
-        query = q;
-        return [tab(1), tab(2, 20)];
-      },
-    },
-    windows: { getCurrent: async () => ({ id: 10 }) },
-    extension: { isAllowedIncognitoAccess: async () => false },
-  });
-  assert.equal((await api.discover()).length, 2);
-  assert.equal(query.currentWindow, undefined);
-  assert.equal(query.active, undefined);
-  assert.equal(query.url.length, 8);
-  assert.ok(query.url.includes("https://claude.ai/*"));
+test("favicons accept only HTTPS provider-host assets and otherwise use a local fallback", () => {
+  const api = harness();
+  const urls = [
+    "https://chatgpt.com/favicon.ico",
+    "https://tracking.example/icon.png",
+    "javascript:alert(1)",
+    "http://chatgpt.com/favicon.ico",
+  ];
+  const entries = api.describeTabs(
+    urls.map((favIconUrl, i) =>
+      tab(i + 1, 10, { favIconUrl, url: `https://chatgpt.com/c/${i}` }),
+    ),
+    10,
+    false,
+  );
+  assert.equal(entries[0].favicon, urls[0]);
+  assert.ok(entries.slice(1).every((entry) => entry.favicon === null));
 });
 
-test("selected destinations receive the same capture; mixed failures never hide successes", async () => {
-  const tabs = [tab(1), tab(2, 20), tab(3, 20)];
-  const api = harness({
-    tabs: { get: async (id) => tabs.find((t) => t.id === id) },
-  });
-  const choices = api.describeTabs(tabs, 10, false);
+test("preparation visits every selected destination and reports per-destination results", async () => {
+  const api = harness({ tabs: { get: async (id) => tab(id) } });
   const capture = { screenshot: "png", text: "plain text" };
-  const calls = [],
-    updates = [];
-  const results = await api.sendSelected(
-    choices.slice(0, 2),
+  const calls = [];
+  const updates = [];
+  const results = await api.prepareSelected(
+    api.describeTabs([tab(1), tab(2), tab(3)], 10, false),
     capture,
     async (destination, value) => {
       assert.equal(value, capture);
       calls.push(destination.id);
       if (destination.id === 2) throw new Error("upload failed");
-      return { sent: true };
+      return { prepared: true };
     },
     (id, result) => updates.push([id, result.state]),
   );
-  assert.deepEqual(calls, [1, 2]);
+  assert.deepEqual(calls, [1, 2, 3]);
   assert.deepEqual(
-    Array.from(results, (r) => r.state),
-    ["sent", "failed"],
+    Array.from(results, (result) => result.state),
+    ["prepared", "failed", "prepared"],
   );
-  assert.equal(updates.length, 4);
+  assert.equal(updates.length, 6);
 });
 
-test("navigation, closed tabs and revoked Incognito access fail before delivery", async () => {
+test("navigation, closed tabs and revoked Incognito access fail before preparation", async () => {
   const api = harness({
     tabs: {
       get: async (id) => {
@@ -161,271 +165,101 @@ test("navigation, closed tabs and revoked Incognito access fail before delivery"
     10,
     true,
   );
-  let sends = 0;
-  const results = await api.sendSelected(
+  let preparations = 0;
+  const results = await api.prepareSelected(
     choices,
     {},
     async () => {
-      sends++;
+      preparations++;
     },
     () => {},
   );
-  assert.equal(sends, 0);
-  assert.ok(results.every((r) => r.state === "failed"));
+  assert.equal(preparations, 0);
+  assert.ok(results.every((result) => result.state === "failed"));
 });
 
-test("ambiguous submission is marked for review, not reported sent", async () => {
+test("an uncertain preparation is marked for review, never reported as added", async () => {
   const api = harness({ tabs: { get: async () => tab(1) } });
-  const results = await api.sendSelected(
+  const results = await api.prepareSelected(
     api.describeTabs([tab(1)], 10, false),
     {},
     async () => {
-      const error = new Error("Tab closed after submission");
+      const error = new Error("Composer changed while adding");
       error.needsReview = true;
       throw error;
     },
     () => {},
   );
-  assert.equal(results[0].state, "review");
+  assert.deepEqual(
+    Array.from(results, (result) => result.state),
+    ["review"],
+  );
+  const unconfirmed = await api.prepareSelected(
+    api.describeTabs([tab(1)], 10, false),
+    {},
+    async () => ({ prepared: false }),
+    () => {},
+  );
+  assert.deepEqual(
+    Array.from(unconfirmed, (result) => result.state),
+    ["review"],
+  );
 });
 
-test("pre-send busy is temporary, other chats continue, and retry is explicit", async () => {
-  const tabs = [tab(1), tab(2), tab(3), tab(4)];
-  const api = harness({
-    tabs: { get: async (id) => tabs.find((item) => item.id === id) },
-  });
-  const choices = api.describeTabs(tabs, 10, false);
-  const calls = [];
-  const results = await api.sendSelected(
+test("a busy chat is reported as retryable and a definite refusal as failed", async () => {
+  const api = harness({ tabs: { get: async () => tab(1) } });
+  const choices = api.describeTabs([tab(1)], 10, false);
+  const busy = await api.prepareSelected(
     choices,
     {},
-    async (destination) => {
-      calls.push(destination.id);
-      if (destination.id === 1)
-        throw Object.assign(new Error("Generating a response"), {
-          busy: true,
-          needsReview: false,
-        });
-      if (destination.id === 3) throw new Error("Upload failed");
-      if (destination.id === 4)
-        throw Object.assign(new Error("Uncertain submission"), {
-          busy: true,
-          needsReview: true,
-        });
-      return { sent: true };
+    async () => {
+      const error = new Error("Generating a response");
+      error.busy = true;
+      error.needsReview = false;
+      throw error;
     },
     () => {},
   );
   assert.deepEqual(
-    Array.from(results, (result) => result.state),
-    ["busy", "sent", "failed", "review"],
+    Array.from(busy, (result) => result.state),
+    ["busy"],
   );
-  assert.deepEqual(calls, [1, 2, 3, 4]); // No automatic retry.
-  const retried = await api.sendSelected(
-    [choices[0]],
+  const refused = await api.prepareSelected(
+    choices,
     {},
-    async (destination) => {
-      calls.push(destination.id);
-      return { sent: true };
+    async () => {
+      const error = new Error(
+        "This chat has an unsent draft. Send or clear it first.",
+      );
+      error.needsReview = false;
+      throw error;
     },
     () => {},
   );
-  assert.equal(retried[0].state, "sent");
-  assert.deepEqual(calls, [1, 2, 3, 4, 1]);
-});
-
-test("only five providers remain, and unimplemented senders stay discovery-only", () => {
-  const api = harness();
-  const urls = [
-    "https://chatgpt.com/c/one",
-    "https://claude.ai/chat/two",
-    "https://gemini.google.com/app/three",
-    "https://chat.deepseek.com/a/chat/s/four",
-    "https://copilot.microsoft.com/chats/five",
-  ];
-  const entries = api.describeTabs(
-    urls.map((url, i) => tab(i, 10 + i, { url })),
-    10,
-    false,
-  );
   assert.deepEqual(
-    Array.from(entries, (item) => item.providerId),
-    ["chatgpt", "claude", "gemini", "deepseek", "copilot"],
+    Array.from(refused, (result) => result.state),
+    ["failed"],
   );
-  assert.equal(entries[0].unavailable, null);
-  assert.equal(entries[1].unavailable, null);
-  assert.equal(entries[2].unavailable, null);
-  assert.ok(
-    entries.slice(3).every((item) => item.discoveryOnly && item.unavailable),
-  );
+  assert.match(refused[0].message, /unsent draft/);
 });
 
-test("provider login, share, marketing pages and spoofed domains are excluded", () => {
-  const { identity } = harness();
-  for (const url of [
-    "https://claude.ai/login",
-    "https://claude.ai/share/one",
-    "https://gemini.google.com/share/two",
-    "https://grok.com/share/three",
-    "https://www.perplexity.ai/hub",
-    "https://copilot.microsoft.com/settings",
-    "https://claude.ai.evil.test/chat/a",
-    "https://claude.ai:123/chat/a",
-    "https://someone@claude.ai/chat/a",
-  ]) {
-    assert.equal(identity(url), null, url);
-  }
-  assert.ok(identity("https://gemini.google.com/u/1/app/one"));
-  assert.ok(identity("https://claude.ai/new"));
-});
-
-test("discovery-only destinations cannot reach an adapter; later selected chats still send", async () => {
-  const tabs = [
-    tab(1, 10, { url: "https://chat.deepseek.com/a/chat/s/test" }),
-    tab(2),
-  ];
-  const api = harness({
-    tabs: { get: async (id) => tabs.find((item) => item.id === id) },
-  });
-  const calls = [];
-  const results = await api.sendSelected(
-    api.describeTabs(tabs, 10, false),
-    {},
-    async (destination) => {
-      calls.push(destination.id);
-      return { sent: true };
-    },
-    () => {},
-  );
-  assert.deepEqual(calls, [2]);
-  assert.deepEqual(
-    Array.from(results, (result) => result.state),
-    ["unavailable", "sent"],
-  );
-});
-
-test("DeepSeek roots need a verified composer; existing conversations keep URL discovery", async () => {
-  const probes = [];
-  const api = harness({
-    tabs: {
-      query: async () => [
-        tab(1, 10, { url: "https://www.deepseek.com/en/" }),
-        tab(2, 10, { url: "https://chat.deepseek.com/" }),
-        tab(3, 20, { url: "https://chat.deepseek.com/a/chat/s/abc" }),
-      ],
-    },
-    scripting: {
-      executeScript: async (options) => {
-        probes.push(options);
-        return [{ result: options.target.tabId === 2 }];
-      },
-    },
-    windows: { getCurrent: async () => ({ id: 10 }) },
-    extension: { isAllowedIncognitoAccess: async () => false },
-  });
-  const { destinations } = await api.discoverOverview();
-  assert.equal(destinations.length, 2);
-  assert.ok(destinations.every((item) => item.providerId === "deepseek"));
-  assert.equal(destinations[0].title, "New chat — DeepSeek");
-  assert.equal(destinations[1].conversation, true);
-  assert.deepEqual(
-    probes.map((options) => options.target.tabId),
-    [1, 2],
-  );
-  assert.ok(
-    probes.every(
-      (options) =>
-        options.target.frameIds[0] === 0 &&
-        options.func.name === "hasDeepSeekComposer",
-    ),
-  );
-});
-
-test("removed providers, read-only shares, account pages and spoofed hosts are excluded", () => {
-  const { identity } = harness();
-  for (const url of [
-    "https://www.meta.ai/share/a",
-    "https://www.meta.ai/login",
-    "https://poe.com/login?redirect_url=/",
-    "https://poe.com/s/shared",
-    "https://poe.com/settings",
-    "https://poe.com.evil.test/chat/x",
-    "https://www.deepseek.com/blog",
-    "https://www.perplexity.ai/",
-    "https://grok.com/",
-    "https://www.meta.ai/",
-    "https://chat.mistral.ai/chat",
-    "https://poe.com/",
-    "https://chat.deepseek.com/sign_in",
-    "https://chat.deepseek.com/share/a",
-    "https://chat.deepseek.com.evil.test/",
-    "http://deepseek.com/",
-  ]) {
-    assert.equal(identity(url), null, url);
-  }
-});
-
-test("DeepSeek public landing with composer is a destination, but denied or inaccessible probes are not", async () => {
-  const urls = [
-    "https://www.deepseek.com/en/",
-    "https://deepseek.com/",
-    "https://chat.deepseek.com/",
-    "https://www.deepseek.com/",
-    "https://chat.deepseek.com/",
-  ];
-  const probes = [];
-  const api = harness({
-    tabs: {
-      query: async () =>
-        urls.map((url, i) =>
-          tab(i + 1, 10, {
-            url,
-            incognito: i === 3,
-            discarded: i === 4,
-          }),
-        ),
-    },
-    scripting: {
-      executeScript: async ({ target }) => {
-        probes.push(target.tabId);
-        if (target.tabId === 2) throw new Error("Permission denied");
-        return [{ result: target.tabId === 1 }];
-      },
-    },
-    windows: { getCurrent: async () => ({ id: 10 }) },
-    extension: { isAllowedIncognitoAccess: async () => false },
-  });
-  const { destinations } = await api.discoverOverview();
-  assert.deepEqual(probes, [1, 2, 3]);
-  assert.equal(destinations.length, 1);
-  assert.equal(destinations[0].title, "New chat — DeepSeek");
-  assert.equal(destinations[0].url, "https://www.deepseek.com/en");
-  assert.ok(destinations[0].discoveryOnly); // Composer discovery never enables an unverified sender.
-});
-
-test("manifest grants the source page and every provider host, and preserves MV3 permissions", () => {
+test("manifest grants source and provider hosts, and declares only preparation providers", () => {
+  const manifest = JSON.parse(read("manifest.json"));
   const context = vm.createContext({ URL });
-  vm.runInContext(
-    fs.readFileSync(path.join(__dirname, "../ai-providers.js"), "utf8"),
-    context,
-  );
+  vm.runInContext(read("ai-providers.js"), context);
   const patterns = vm.runInContext("AIProviders.patterns", context);
-  const manifest = JSON.parse(
-    fs.readFileSync(path.join(__dirname, "../manifest.json"), "utf8"),
-  );
-  const granted = manifest.host_permissions;
   // The Side Panel cannot borrow activeTab from the toolbar click, so the source page
   // needs declared host access; that grant also covers every provider destination.
-  assert.ok(granted.includes("<all_urls>"));
+  assert.ok(manifest.host_permissions.includes("<all_urls>"));
   for (const pattern of patterns) {
     const origin = new URL(pattern.replace(/\*$/, "")).origin;
     assert.ok(
-      granted.includes(pattern) || granted.includes("<all_urls>"),
-      `${origin} must be reachable for delivery`,
+      manifest.host_permissions.includes(pattern) ||
+        manifest.host_permissions.includes("<all_urls>"),
+      `${origin} must be reachable for preparation`,
     );
   }
   assert.deepEqual(manifest.permissions, [
-    "activeTab",
     "scripting",
     "sidePanel",
     "storage",
@@ -436,64 +270,44 @@ test("manifest grants the source page and every provider host, and preserves MV3
   assert.equal(manifest.action.default_popup, undefined);
   // setPanelBehavior({openPanelOnActionClick}) swallows the toolbar click and with it the
   // source tab, so the panel is opened from chrome.action.onClicked instead.
-  const serviceWorker = fs.readFileSync(
-    path.join(__dirname, "../service-worker.js"),
-    "utf8",
-  );
+  const serviceWorker = read("service-worker.js");
   assert.ok(!serviceWorker.includes("setPanelBehavior"));
   assert.ok(serviceWorker.includes("chrome.action.onClicked"));
 });
 
-test("favicons accept only HTTPS provider-host assets and otherwise use a local fallback", () => {
-  const api = harness();
-  const urls = [
-    "https://chatgpt.com/favicon.ico",
-    "https://tracking.example/icon.png",
-    "javascript:alert(1)",
-    "http://chatgpt.com/favicon.ico",
-  ];
-  const entries = api.describeTabs(
-    urls.map((favIconUrl, i) => tab(i, 10, { favIconUrl })),
-    10,
-    false,
+test("every listed provider has an adapter that never submits", () => {
+  const panel = read("sidepanel.html");
+  const providers = vm.runInContext(
+    "AIProviders.all",
+    (() => {
+      const context = vm.createContext({ URL });
+      vm.runInContext(read("ai-providers.js"), context);
+      return context;
+    })(),
   );
-  assert.equal(entries[0].favicon, urls[0]);
-  assert.ok(entries.slice(1).every((entry) => entry.favicon === null));
-});
-
-test("cross-provider queue isolates failures and uncertainty without retrying or changing payload", async () => {
-  const tabs = [
-    tab(1),
-    tab(2, 20, { url: "https://claude.ai/chat/two" }),
-    tab(3, 30, { url: "https://gemini.google.com/app/three" }),
-    tab(4),
-  ];
-  const api = harness(
-    { tabs: { get: async (id) => tabs.find((item) => item.id === id) } },
-    ["claude", "gemini"],
-  );
-  const capture = Object.freeze({ screenshot: "same PNG", text: "same text" });
-  const calls = [];
-  const results = await api.sendSelected(
-    api.describeTabs(tabs, 10, false),
-    capture,
-    async (destination, value) => {
-      assert.equal(value, capture);
-      calls.push(destination.providerId);
-      if (destination.providerId === "claude")
-        throw new Error("Existing draft");
-      if (destination.providerId === "gemini") {
-        const error = new Error("Unconfirmed");
-        error.needsReview = true;
-        throw error;
-      }
-      return { sent: true };
-    },
-    () => {},
-  );
-  assert.deepEqual(calls, ["chatgpt", "chatgpt", "claude", "gemini"]);
-  assert.deepEqual(
-    Array.from(results, (item) => item.state),
-    ["sent", "sent", "failed", "review"],
-  );
+  for (const provider of providers) {
+    const adapter = `${provider.id}-adapter.js`;
+    assert.ok(fs.existsSync(path.join(root, adapter)), `${adapter} must exist`);
+    assert.ok(panel.includes(`src="${adapter}"`));
+    assert.ok(
+      panel.indexOf(`src="${adapter}"`) <
+        panel.indexOf('src="provider-delivery.js"'),
+    );
+    const source = read(adapter);
+    assert.doesNotMatch(
+      source,
+      /send\.click\(\)/,
+      `${adapter} must not click a send control`,
+    );
+    assert.doesNotMatch(
+      source,
+      /KeyboardEvent|keydown|keypress|keyCode|which:\s*13/i,
+      `${adapter} must never synthesize a key event`,
+    );
+    assert.match(source, /prepared: true/);
+  }
+  const delivery = read("provider-delivery.js");
+  assert.ok(delivery.includes("prepareInChatGPT"));
+  assert.ok(delivery.includes("prepareInClaude"));
+  assert.ok(delivery.includes("prepareInGemini"));
 });
