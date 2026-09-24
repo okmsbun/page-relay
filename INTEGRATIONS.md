@@ -3,18 +3,78 @@
 The UI stays in the popup. `content.js`, `page-text.js`, `capture-layout.js`, and
 the capture pipeline in `popup.js` have no provider-specific behavior.
 
+Opening the popup automatically starts one capture. `popup-session.js` pins the
+active source tab/window once at startup. Neither provider switching nor sending
+can start another capture. Closing and reopening starts a fresh session with no
+previous screenshot or selections. Capture errors instruct the user to reopen;
+there are no Capture, Capture again, or Retry buttons.
+
+Discovered providers appear as single-row, horizontally scrollable tabs (also
+accessible with Left/Right/Home/End). Only the active provider's conversations are
+shown. Selection and send results live outside the tab view, so Send includes
+selected conversations on hidden tabs. Counts indicate hidden selections and
+an underline flags providers with failed/review results. Provider icons use
+Chrome's known HTTPS favicon on the provider's own domain, with a small local
+symbol fallback; no third-party favicon service or extra permission is used.
+
 ## Current capability
 
 | Provider | Recognized chat routes | Sending |
 | --- | --- | --- |
 | ChatGPT | New chats, `/c/…`, custom GPT conversations | Enabled; existing user-confirmed adapter, regression fixtures |
-| Claude | `/new`, `/chat/…` | Unavailable until signed-in UI verification |
-| Gemini | `/app`, `/app/…`, account-prefixed `/u/N/app/…` | Unavailable until signed-in UI verification |
-| DeepSeek | `/`, `/a/chat/s/…` | Unavailable until signed-in UI verification |
-| Perplexity | `/`, `/search/…` | Unavailable until signed-in UI verification |
-| Microsoft Copilot | `/`, `/chats/…` | Unavailable until signed-in UI verification |
-| Grok | `/`, `/c/…`, `/chat/…` | Unavailable until signed-in UI verification |
-| Mistral Le Chat | `/chat`, `/chat/…` | Unavailable until signed-in UI verification |
+| Claude | `/new`, `/chat/…` | Discovery only: adapter not implemented; signed-in DOM inspection blocked by Chrome's Apple Events setting |
+| Gemini | `/app`, `/app/…`, account-prefixed `/u/N/app/…` | Discovery only: adapter not implemented; signed-in DOM inspection blocked by Chrome's Apple Events setting |
+| DeepSeek | `chat.deepseek.com/`, `/a/chat/s/…` | Discovery only: image acceptance, full-text delivery and outgoing-turn confirmation unverified |
+| Perplexity | `/`, `/search/…` | Discovery only: combined-upload readiness and outgoing-turn confirmation unverified |
+| Microsoft Copilot | `/`, `/chats/…` | Discovery only: attachment controls, draft detection and full-context delivery unverified |
+| Grok | `/`, `/c/…`, `/chat/…` | Discovery only: both-file readiness and outgoing-turn confirmation unverified |
+| Meta AI | `meta.ai` / `www.meta.ai`: `/`, `/new`, `/c/…` | Discovery only: signed-in composer and complete-context attachment support unverified |
+| Mistral Vibe Chat | `chat.mistral.ai/chat`, `/chat/…` | Discovery only: current upload readiness, draft protection and outgoing-turn confirmation unverified |
+| Poe | `poe.com` / `www.poe.com`: `/`, `/chat/…` | Discovery only: per-bot image/file capabilities and delivery confirmation unverified |
+
+These are limitations of the extension's current implementation and verification,
+not proven limitations of the services. **Discovery only** must not be confused
+with **Unsupported** (a demonstrated capability mismatch). Only ChatGPT has an
+implemented sender. No new provider has been live-verified in this change.
+
+Provider tabs are derived from the latest matching open conversations, never
+from the whole registry. Refresh adds new providers, removes closed providers,
+and selects a remaining provider if the active one disappears. Selections on
+unchanged accessible tabs survive refresh. With no matching chats, the popup
+shows **No AI chats open** and Refresh; tabs, destination list, search and Send
+are hidden. A discovery API failure shows an error rather than claiming no chats
+are open.
+
+### DeepSeek diagnosis
+
+The actual open tab inspected during development was
+`https://www.deepseek.com/en/`, not `https://chat.deepseek.com/`. The old registry
+and permissions recognized only the chat domain; its chat routes were already
+supported for discovery. The website is not a conversation and must not receive
+an injected sending script. The registry now classifies the public domains
+separately. When one is open, a compact notice links to the chat app without
+creating a fake destination/provider tab. Clicking that link is a user action;
+the extension never navigates an existing user tab automatically.
+
+Exact host permissions cover all registered discovery hosts, including the
+DeepSeek website solely for this diagnostic notice. A test enforces registry /
+manifest agreement. Reload the extension to apply newly added host permissions.
+
+### Investigation sources and boundaries
+
+- [DeepSeek's public website](https://www.deepseek.com/en/) links to its separate
+  chat app; opening the public website is not opening a conversation.
+- [Vibe's file documentation](https://docs.mistral.ai/vibe/work/files-and-canvas)
+  documents image/text uploads, but does not verify the browser adapter's draft
+  or delivery checks. The old Le Chat host currently opens Vibe Chat.
+- [Poe's Embed API](https://creator.poe.com/docs/canvas-apps/poe-embed-api-draft)
+  applies to Canvas apps; it is not evidence that an extension can safely post
+  into arbitrary existing Poe tabs. Signed-out access to Poe redirects to login.
+- Public access to Meta AI did not expose a signed-in composer. Meta/Poe route
+  recognition is conservative and fixture-tested, not a live sending claim.
+
+No session cookies, private APIs, profile copies, DevTools Protocol, or bypass of
+Chrome's disabled Apple Events JavaScript setting were used to obtain access.
 
 Recognition identifies a candidate from Chrome's URL and title, not a guarantee
 that the tab is signed in or supports sending. Unknown routes, shared read-only
@@ -70,12 +130,23 @@ authenticated provider end-to-end tests. No real messages are sent by these test
 3. Repeat with an existing draft or existing attachment in one chat. That chat
    must remain untouched and report Failed, while the other selected chat sends.
 4. Open Claude and the other listed providers on recognized conversation URLs.
-   Refresh: each should appear under its provider, with a disabled checkbox and
-   **Unsupported**. Expand the status to read the reason. Search by provider or
+   Refresh and switch provider tabs: each should appear with a disabled checkbox and
+   **Discovery only**. Expand the status to read the reason. Search by provider or
    title. Check window and Incognito labels; no sending is attempted to these tabs.
 5. A failed/uncertain upload must not trigger another Send. Inspect the real chat
    before manually trying again. Account limits and changed provider UIs can
    require a review even with the updated adapter.
+6. Open `https://chat.deepseek.com/`, then refresh the popup: DeepSeek should
+   appear. Close all its chat tabs and refresh: it should disappear. An open
+   `www.deepseek.com/en/` tab instead produces a website notice, not a chat row.
+7. Close all recognized AI chats and refresh: only the empty state, Refresh, and
+   any website notice remain in the destinations section. Reopen one and refresh
+   to confirm the provider tabs/list return without losing the page capture.
+
+Live Claude/Gemini verification was attempted but blocked by Chrome's disabled
+**View → Developer → Allow JavaScript from Apple Events** setting. No live
+attachment or message was sent, and neither provider was enabled. This is a test
+access blocker, not evidence that either service cannot accept the capture.
 
 ## Enabling another provider (Claude is next for manual verification)
 

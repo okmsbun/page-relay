@@ -47,7 +47,7 @@ test("discovery queries all accessible windows without broad tabs permission", a
   assert.equal((await api.discover()).length, 2);
   assert.equal(query.currentWindow, undefined);
   assert.equal(query.active, undefined);
-  assert.equal(query.url.length, 10);
+  assert.equal(query.url.length, 16);
   assert.ok(query.url.includes("https://claude.ai/*"));
 });
 
@@ -87,16 +87,17 @@ test("ambiguous submission is marked for review, not reported sent", async () =>
   assert.equal(results[0].state, "review");
 });
 
-test("all eight providers are identified, but unverified sending stays unavailable", () => {
+test("all ten providers are identified, but unimplemented senders stay discovery-only", () => {
   const api = harness();
   const urls = ["https://chatgpt.com/c/one", "https://claude.ai/chat/two", "https://gemini.google.com/app/three",
     "https://chat.deepseek.com/a/chat/s/four", "https://www.perplexity.ai/search/five",
-    "https://copilot.microsoft.com/chats/six", "https://grok.com/c/seven", "https://chat.mistral.ai/chat/eight"];
+    "https://copilot.microsoft.com/chats/six", "https://grok.com/c/seven", "https://chat.mistral.ai/chat/eight",
+    "https://www.meta.ai/c/nine", "https://poe.com/chat/ten"];
   const entries = api.describeTabs(urls.map((url, i) => tab(i, 10 + i, { url })), 10, false);
   assert.deepEqual(Array.from(entries, (item) => item.providerId),
-    ["chatgpt", "claude", "gemini", "deepseek", "perplexity", "copilot", "grok", "mistral"]);
+    ["chatgpt", "claude", "gemini", "deepseek", "perplexity", "copilot", "grok", "mistral", "meta", "poe"]);
   assert.equal(entries[0].unavailable, null);
-  assert.ok(entries.slice(1).every((item) => item.unsupported && item.unavailable));
+  assert.ok(entries.slice(1).every((item) => item.discoveryOnly && item.unavailable));
 });
 
 test("provider login, share, marketing pages and spoofed domains are excluded", () => {
@@ -110,7 +111,7 @@ test("provider login, share, marketing pages and spoofed domains are excluded", 
   assert.ok(identity("https://claude.ai/new"));
 });
 
-test("unsupported destinations cannot reach an adapter; later selected chats still send", async () => {
+test("discovery-only destinations cannot reach an adapter; later selected chats still send", async () => {
   const tabs = [tab(1, 10, { url: "https://claude.ai/chat/test" }), tab(2)];
   const api = harness({ tabs: { get: async (id) => tabs.find((item) => item.id === id) } });
   const calls = [];
@@ -118,7 +119,27 @@ test("unsupported destinations cannot reach an adapter; later selected chats sti
     calls.push(destination.id); return { sent: true };
   }, () => {});
   assert.deepEqual(calls, [2]);
-  assert.deepEqual(Array.from(results, (result) => result.state), ["unsupported", "sent"]);
+  assert.deepEqual(Array.from(results, (result) => result.state), ["unavailable", "sent"]);
+});
+
+test("DeepSeek landing page is explained, never mistaken for a sendable conversation", async () => {
+  const api = harness({ tabs: { query: async () => [tab(1, 10, { url: "https://www.deepseek.com/en/" }),
+    tab(2, 10, { url: "https://chat.deepseek.com/" }), tab(3, 20, { url: "https://chat.deepseek.com/a/chat/s/abc" })] },
+    windows: { getCurrent: async () => ({ id: 10 }) }, extension: { isAllowedIncognitoAccess: async () => false } });
+  const { destinations, notices } = await api.discoverOverview();
+  assert.equal(destinations.length, 2);
+  assert.ok(destinations.every((item) => item.providerId === "deepseek"));
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0].url, "https://chat.deepseek.com/");
+  assert.equal(api.identity("https://www.deepseek.com/en/"), null);
+});
+
+test("new provider routes reject read-only shares, account pages and spoofed hosts", () => {
+  const { identity } = harness();
+  for (const url of ["https://www.meta.ai/share/a", "https://www.meta.ai/login", "https://poe.com/login?redirect_url=/",
+    "https://poe.com/s/shared", "https://poe.com/settings", "https://poe.com.evil.test/chat/x", "https://www.deepseek.com/en/"]) {
+    assert.equal(identity(url), null, url);
+  }
 });
 
 test("manifest limits host access to the provider registry and preserves MV3 permissions", () => {
@@ -130,6 +151,14 @@ test("manifest limits host access to the provider registry and preserves MV3 per
   assert.deepEqual(manifest.permissions, ["activeTab", "scripting"]);
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.side_panel, undefined);
+});
+
+test("favicons accept only HTTPS provider-host assets and otherwise use a local fallback", () => {
+  const api = harness();
+  const urls = ["https://chatgpt.com/favicon.ico", "https://tracking.example/icon.png", "javascript:alert(1)", "http://chatgpt.com/favicon.ico"];
+  const entries = api.describeTabs(urls.map((favIconUrl, i) => tab(i, 10, { favIconUrl })), 10, false);
+  assert.equal(entries[0].favicon, urls[0]);
+  assert.ok(entries.slice(1).every((entry) => entry.favicon === null));
 });
 
 test("cross-provider queue isolates failures and uncertainty without retrying or changing payload", async () => {

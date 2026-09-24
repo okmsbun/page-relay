@@ -1,118 +1,157 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Popup state checks</title>
+<title>Popup sessions and provider tabs</title>
 <style>body { margin: 0; } iframe { display: block; border: 0; width: 380px; height: 600px; }</style>
-<iframe id="popup" src="../popup.html" title="Popup under test"></iframe>
+<div id="frames"></div>
 <pre id="result" hidden>RUNNING</pre>
 <script>
-document.getElementById("popup").addEventListener("load", async (event) => {
-  if (location.search.includes("theme=light")) event.target.style.colorScheme = "light";
-  const win = event.target.contentWindow;
-  const doc = win.document;
+(async () => {
   const checks = [];
   const assert = (ok, label) => { if (!ok) throw new Error(label); checks.push(label); };
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const html = await (await fetch("../popup.html")).text();
+  const base = new URL("../", location.href).href;
+  let sourceId = 1, captureCalls = [], queries = 0, fail = false, discoveryFails = false;
+  const chats = [
+    { id: 10, windowId: 2, index: 1, title: "Extension debugging", url: "https://chatgpt.com/c/one", status: "complete", incognito: false },
+    { id: 11, windowId: 3, index: 0, title: "Other discussion", url: "https://chatgpt.com/c/two", status: "complete", incognito: false },
+    { id: 12, windowId: 4, index: 0, title: "Private discussion", url: "https://chatgpt.com/c/three", status: "complete", incognito: true },
+    { id: 13, windowId: 3, index: 2, title: "Claude discussion", url: "https://claude.ai/chat/four", status: "complete", incognito: false },
+    { id: 14, windowId: 4, index: 2, title: "Gemini discussion", url: "https://gemini.google.com/app/five", status: "complete", incognito: true },
+  ];
+  const image = document.createElement("canvas"); image.width = 960; image.height = 2600;
+  const ctx = image.getContext("2d");
+  ctx.fillStyle = "#edf0f6"; ctx.fillRect(0, 0, 960, 2600);
+  ctx.fillStyle = "#242a3b"; ctx.fillRect(0, 0, 960, 150);
+  ctx.fillStyle = "white"; ctx.font = "32px system-ui"; ctx.fillText("Sample page", 30, 90);
+  for (let y = 200; y < 2500; y += 150) { ctx.fillStyle = "white"; ctx.fillRect(30, y, 900, 110); }
+  const png = image.toDataURL();
+  // Fixtures install mocks before the real popup-session.js runs.
+  window.configurePopupFixture = (win) => {
+    win.chrome = { tabs: {
+      query: async (options) => { if (options.url) { if (discoveryFails) throw new Error("Test discovery error"); return chats; } queries++; return [{ id: sourceId, windowId: 2 }]; },
+      get: async (id) => chats.find((tab) => tab.id === id),
+    }, windows: { getCurrent: async () => ({ id: 2 }) }, extension: { isAllowedIncognitoAccess: async () => true } };
+    win.captureFullPage = async (tab) => {
+      captureCalls.push(tab.id);
+      win.showProgress(0, 1, 0.5, 2);
+      win.showTextStats({ characters: 400, estimatedTokens: 100 });
+      await wait(150);
+      if (fail) throw new Error("Cannot access a chrome:// URL");
+      return { screenshot: png, text: "Hello <script>plain text<\/script>\nRevenue\nRevenue", characters: 49, estimatedTokens: 13 };
+    };
+  };
+  async function openPopup() {
+    const frame = document.createElement("iframe");
+    frame.title = "Popup under test";
+    const loaded = new Promise((resolve) => frame.addEventListener("load", resolve, { once: true }));
+    frame.srcdoc = html.replace("<head>", '<head><base href="' + base + '">')
+      .replace('<script src="popup-session.js">', '<script>parent.configurePopupFixture(window)<\/script><script src="popup-session.js">');
+    document.getElementById("frames").replaceChildren(frame);
+    await loaded;
+    return { frame, win: frame.contentWindow, doc: frame.contentDocument };
+  }
   try {
-    assert(!doc.getElementById("emptyState").hidden, "empty state visible");
-    assert(doc.getElementById("previewViewport").hidden, "empty preview hidden");
-    assert(!doc.getElementById("takeScreenshot").disabled, "capture action available");
-    if (location.search !== "?state=idle") {
-      win.chrome = win.chrome || {};
-      const chats = [
-        { id: 10, windowId: 2, index: 1, title: "Extension debugging", url: "https://chatgpt.com/c/one", status: "complete", incognito: false },
-        { id: 11, windowId: 3, index: 0, title: "Extension debugging", url: "https://chatgpt.com/c/two", status: "complete", incognito: false },
-        { id: 12, windowId: 4, index: 0, title: "Private discussion", url: "https://chatgpt.com/c/three", status: "complete", incognito: true },
-        { id: 13, windowId: 3, index: 2, title: "Claude discussion", url: "https://claude.ai/chat/four", status: "complete", incognito: false },
-        { id: 14, windowId: 4, index: 2, title: "Gemini discussion", url: "https://gemini.google.com/app/five", status: "complete", incognito: true },
-      ];
-      win.chrome.tabs = { query: async (options) => options.url ? chats : [{ id: 1, windowId: 2 }],
-        get: async (id) => chats.find((tab) => tab.id === id) };
-      win.chrome.windows = { getCurrent: async () => ({ id: 2 }) };
-      win.chrome.extension = { isAllowedIncognitoAccess: async () => true };
-      const image = document.createElement("canvas");
-      image.width = 960; image.height = 2600;
-      const ctx = image.getContext("2d");
-      ctx.fillStyle = "#f5f6fa"; ctx.fillRect(0, 0, 960, 2600);
-      ctx.fillStyle = "#242a3b"; ctx.fillRect(0, 0, 960, 150);
-      ctx.fillStyle = "white"; ctx.font = "bold 32px system-ui"; ctx.fillText("A complete view", 35, 90);
-      ctx.fillStyle = "#e1e5f1"; ctx.fillRect(0, 150, 210, 2450);
-      for (let y = 220; y < 2500; y += 140) {
-        ctx.fillStyle = "#a2acc6"; ctx.fillRect(35, y, 120, 12);
-        ctx.fillStyle = "white"; ctx.fillRect(250, y - 20, 650, 100);
-        ctx.fillStyle = "#d1d8e8"; ctx.fillRect(280, y, 420, 14);
-      }
-      const png = image.toDataURL();
-      win.captureFullPage = async () => {
-        win.showProgress(0, 2, 0.5, 2);
-        win.showTextStats({ characters: 400, estimatedTokens: 100 });
-        await wait(100);
-        return { screenshot: png, text: "Hello <script>plain text<\/script>\nRevenue\nRevenue", characters: 49, estimatedTokens: 13 };
-      };
-      doc.getElementById("takeScreenshot").click();
-      await wait(10);
-      assert(doc.body.dataset.state === "capturing", "loading state announced");
-      assert(doc.getElementById("takeScreenshot").disabled, "duplicate captures disabled");
-      assert(!doc.getElementById("captureProgress").hidden, "progress visible");
-      assert(doc.getElementById("textTokens").textContent === "~100 tokens", "live text estimate visible");
-      await wait(200);
-      assert(doc.body.dataset.state === "success", "success state visible");
-      assert(doc.getElementById("emptyState").hidden && !doc.getElementById("previewViewport").hidden, "preview replaces empty state");
-      assert(doc.getElementById("imageMeta").textContent.includes("960"), "image dimensions displayed");
-      assert(!doc.getElementById("pageText").open, "text preview collapsed by default");
-      assert(doc.getElementById("textTokens").textContent === "~13 tokens", "final token estimate visible");
-      doc.querySelector("#pageText summary").click();
-      assert(doc.getElementById("pageText").open, "text preview expands");
-      assert(doc.getElementById("textPreview").textContent.includes("<script>plain text<\/script>"), "text displayed literally without HTML execution");
-      assert(!doc.getElementById("textPreview").querySelector("script"), "preview uses safe text content");
-      doc.querySelector("#pageText summary").click();
-      doc.getElementById("zoomPreview").click();
-      assert(!doc.getElementById("destinations").hidden, "destination selector appears after capture");
-      const choices = doc.querySelectorAll(".destination-row input");
-      assert(choices.length === 5 && [...choices].every((input) => !input.checked), "all chats listed with no automatic selection");
-      assert(doc.querySelectorAll(".destination-provider").length === 3, "destinations grouped under three provider headings");
-      assert(choices[3].disabled && choices[4].disabled, "unverified providers discovered but not selectable");
-      assert(doc.querySelectorAll(".destination-feedback.unsupported").length === 2, "unverified providers explicitly marked unsupported");
-      const search = doc.getElementById("destinationSearch");
-      search.value = "claude"; search.dispatchEvent(new win.Event("input"));
-      assert(doc.querySelectorAll(".destination-row").length === 1, "search matches provider names");
-      search.value = ""; search.dispatchEvent(new win.Event("input"));
-      assert(doc.getElementById("destinationList").textContent.includes("Incognito"), "incognito destination labelled");
-      assert(doc.getElementById("destinationList").textContent.includes("Other window"), "multiple windows visible");
-      const deliveries = [];
-      win.eval("destinationUI").configureDelivery(async (destination, capture) => {
-        deliveries.push(destination.id);
-        assert(capture.text.includes("Revenue"), "selected chat receives captured text");
-        assert(capture.screenshot === png, "selected chat receives captured screenshot");
-        if (destination.id === 11) throw new Error("Test delivery failure");
-        return { sent: true };
-      });
-      const currentChoices = doc.querySelectorAll(".destination-row input");
-      currentChoices[0].click(); currentChoices[1].click();
-      assert(doc.getElementById("sendCapture").textContent === "Send to 2 chats", "multiple destination count visible");
-      assert(deliveries.length === 0, "selection alone sends nothing");
-      doc.getElementById("sendCapture").click();
-      await wait(100);
-      assert(deliveries.join(",") === "10,11", "only selected chats receive capture");
-      assert(doc.querySelector(".destination-feedback.sent") && doc.querySelector(".destination-feedback.failed"), "partial success and failure visible together");
-      assert(doc.getElementById("sendCapture").textContent === "Send to 1 chat", "successful destination excluded from retry");
-      assert(doc.getElementById("previewViewport").classList.contains("actual-size"), "actual-size preview works");
-      doc.getElementById("zoomPreview").click();
-      win.captureFullPage = async () => { throw new Error("Cannot access a chrome:// URL"); };
-      doc.getElementById("takeScreenshot").click();
-      await wait(100);
-      assert(doc.body.dataset.state === "error", "inline error state visible");
-      assert(doc.getElementById("statusDetail").textContent.includes("regular webpage"), "protected-page error is actionable");
-      assert(doc.getElementById("preview").src === png, "failed retry preserves previous screenshot");
-      assert(doc.getElementById("textPreview").textContent.includes("Revenue\nRevenue"), "failed retry preserves paired text");
-      assert(!doc.getElementById("takeScreenshot").disabled, "retry action available");
-      if (location.search !== "?state=error") {
-        win.setStatus("success", "", "");
-        doc.getElementById("buttonLabel").textContent = "Capture again";
-      }
+    let { frame, win, doc } = await openPopup();
+    assert(!doc.getElementById("takeScreenshot"), "no initial or recapture button");
+    assert(doc.body.dataset.state === "capturing", "capture starts automatically on open");
+    assert(doc.getElementById("destinations").hidden, "sending unavailable while capturing");
+    assert(!doc.getElementById("captureProgress").hidden, "progress visible");
+    assert(doc.getElementById("textTokens").textContent === "~100 tokens", "live text estimate visible");
+    sourceId = 99;
+    await win.startPopupCapture(Promise.resolve({ id: 99, windowId: 2 }));
+    await wait(220);
+    assert(captureCalls.join(",") === "1" && queries === 1, "source pinned once and duplicate startup ignored");
+    assert(doc.body.dataset.state === "success", "automatic capture completes");
+    assert(doc.getElementById("emptyState").hidden && !doc.getElementById("previewViewport").hidden, "preview replaces placeholder");
+    assert(doc.getElementById("imageMeta").textContent.includes("960"), "image dimensions displayed");
+    assert(!doc.getElementById("pageText").open, "text starts collapsed");
+    assert(doc.getElementById("textTokens").textContent === "~13 tokens", "token estimate retained");
+    doc.querySelector("#pageText summary").click();
+    assert(doc.getElementById("pageText").open, "text expands");
+    assert(doc.getElementById("textPreview").textContent.includes("<script>plain text<\/script>") && !doc.querySelector("#textPreview script"), "extracted text is safe literal content");
+    doc.querySelector("#pageText summary").click();
+    doc.getElementById("zoomPreview").click();
+    assert(doc.getElementById("previewViewport").classList.contains("actual-size"), "actual-size preview works");
+    doc.getElementById("zoomPreview").click();
+    const chooseProvider = (id) => doc.getElementById("provider-" + id).click();
+    assert(doc.querySelectorAll('[role="tab"]').length === 3, "horizontal tabs for discovered providers");
+    assert(doc.querySelectorAll(".provider-icon").length === 3, "each provider has an icon");
+    assert(doc.querySelectorAll(".destination-row input").length === 3, "only active provider conversations shown");
+    assert([...doc.querySelectorAll(".destination-row input")].every((input) => !input.checked), "no automatic selection");
+    assert(doc.getElementById("destinationList").textContent.includes("Incognito") && doc.getElementById("destinationList").textContent.includes("Other window"), "window and incognito labels retained");
+    doc.getElementById("destination-10").click();
+    chooseProvider("claude");
+    assert(doc.querySelectorAll(".destination-row").length === 1 && doc.getElementById("destination-13").disabled, "unverified Claude remains unavailable");
+    assert(doc.querySelector(".destination-feedback.discovery-only"), "unimplemented integration is labelled discovery-only, not a service limitation");
+    chooseProvider("gemini");
+    assert(doc.getElementById("destination-14").disabled, "unverified Gemini remains unavailable");
+    chooseProvider("chatgpt");
+    assert(doc.getElementById("destination-10").checked, "selection survives provider switches");
+    doc.getElementById("provider-chatgpt").dispatchEvent(new win.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    assert(doc.getElementById("provider-claude").getAttribute("aria-selected") === "true", "keyboard arrow changes provider");
+    // Test-only capability and fake delivery; production Claude remains disabled.
+    win.eval('AIProviders.get("claude").sending = true');
+    doc.getElementById("refreshDestinations").click(); await wait(30);
+    doc.getElementById("destination-13").click();
+    chooseProvider("chatgpt"); doc.getElementById("destination-11").click();
+    assert(doc.getElementById("sendCapture").textContent === "Send to 3 chats", "send count includes hidden providers");
+    assert(doc.querySelector("#provider-claude .provider-count").textContent === "1", "hidden provider selection count remains visible");
+    const search = doc.getElementById("destinationSearch");
+    search.value = "Extension"; search.dispatchEvent(new win.Event("input"));
+    assert(doc.querySelectorAll(".destination-row").length === 1, "search filters active provider without discarding selection");
+    const deliveries = [];
+    win.eval("destinationUI").configureDelivery(async (destination, capture) => {
+      deliveries.push(destination.id);
+      assert(capture.screenshot === png && capture.text.includes("Revenue"), "identical screenshot and text delivered");
+      if (destination.id === 11) throw new Error("Test failure");
+      return { sent: true };
+    });
+    assert(deliveries.length === 0, "selection alone never sends");
+    doc.getElementById("sendCapture").click(); await wait(60);
+    assert(deliveries.join(",") === "10,11,13", "send includes selected conversations on hidden provider tabs");
+    assert(doc.getElementById("destinationNote").textContent === "2 sent · 1 failed", "partial results summarized across providers");
+    chooseProvider("claude");
+    assert(doc.querySelector(".destination-feedback.sent"), "hidden provider result retained");
+    chooseProvider("chatgpt");
+    assert(doc.querySelector(".destination-feedback.failed") && doc.querySelector(".destination-feedback.sent"), "independent results preserved");
+    assert(captureCalls.length === 1, "sending never recaptures the destination tab");
+    const refresh = async () => { doc.getElementById("refreshDestinations").click(); await wait(30); };
+    const originalChats = chats.slice();
+    chats.splice(0, chats.length, originalChats[0], { id: 15, windowId: 3, index: 3, title: "DeepSeek chat", url: "https://chat.deepseek.com/a/chat/s/test", incognito: false });
+    await refresh();
+    assert(doc.querySelectorAll('[role="tab"]').length === 2 && doc.getElementById("provider-deepseek") && !doc.getElementById("provider-gemini"), "refresh removes closed providers and adds newly opened DeepSeek chat");
+    chats.push(originalChats[4]); await refresh();
+    chooseProvider("gemini");
+    assert(doc.getElementById("destination-14"), "new Gemini conversation appears after refresh");
+    chats.pop(); await refresh();
+    assert(!doc.getElementById("provider-gemini") && doc.querySelector('[role="tab"][aria-selected="true"]'), "closing active provider selects a remaining provider");
+    chats.splice(0); await refresh();
+    assert(!doc.getElementById("noDestinations").hidden && doc.getElementById("noDestinations").textContent.includes("No AI chats open"), "zero chats shows compact empty state");
+    assert(doc.getElementById("providerTabs").hidden && doc.getElementById("destinationList").hidden && doc.getElementById("sendCapture").hidden && doc.getElementById("destinationSearch").hidden, "empty state hides tabs list search and Send");
+    assert(!doc.getElementById("refreshDestinations").disabled, "empty state keeps Refresh available");
+    chats.push({ id: 16, windowId: 2, index: 1, url: "https://www.deepseek.com/en/", incognito: false }); await refresh();
+    assert(doc.getElementById("providerTabs").hidden && doc.getElementById("discoveryNotices").textContent.includes("not in a chat"), "DeepSeek website is explained without creating a fake conversation tab");
+    assert(doc.querySelector("#discoveryNotices a").href === "https://chat.deepseek.com/", "DeepSeek notice links to real chat app");
+    discoveryFails = true; await refresh();
+    assert(doc.getElementById("noDestinations").hidden && doc.getElementById("destinationNote").textContent.includes("Test discovery error"), "query failure is not misreported as no open chats");
+    discoveryFails = false; chats.splice(0, chats.length, ...originalChats); await refresh();
+    assert(!doc.getElementById("destinationList").hidden && doc.querySelectorAll('[role="tab"]').length === 3, "refresh recovers provider views after empty or failed discovery");
+    frame.remove();
+    ({ frame, win, doc } = await openPopup()); await wait(220);
+    assert(captureCalls.join(",") === "1,99" && queries === 2, "reopening makes a fresh capture of the newly active source");
+    assert(doc.getElementById("sendCapture").disabled && !doc.querySelector(".destination-feedback.sent"), "new popup does not reuse selection or results");
+    if (location.search.includes("preview")) {
+      document.getElementById("result").textContent = "PASS " + JSON.stringify(checks); return;
     }
+    frame.remove(); fail = true;
+    ({ frame, win, doc } = await openPopup()); await wait(220);
+    assert(doc.body.dataset.state === "error", "automatic capture errors are displayed");
+    assert(doc.getElementById("statusDetail").textContent.includes("regular webpage") && doc.getElementById("statusDetail").textContent.includes("reopen"), "error explains protected page and reopen recovery");
+    assert(doc.getElementById("destinations").hidden && doc.getElementById("pageText").hidden, "failed session exposes no stale capture to send");
     document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
   } catch (error) {
     document.getElementById("result").textContent = "FAIL " + error.message + " " + JSON.stringify(checks);
   }
-});
+})();
 </script>

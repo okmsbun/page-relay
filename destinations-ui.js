@@ -5,6 +5,12 @@ const destinationUI = (() => {
   const refreshButton = document.getElementById("refreshDestinations");
   const sendButton = document.getElementById("sendCapture");
   const note = document.getElementById("destinationNote");
+  const tabs = document.getElementById("providerTabs");
+  const emptyState = document.getElementById("noDestinations");
+  const noticeList = document.getElementById("discoveryNotices");
+  let notices = [];
+  let discoveryError = false;
+  let activeProvider = null;
   let destinations = [];
   let selection = new Set();
   let statuses = new Map();
@@ -24,19 +30,27 @@ const destinationUI = (() => {
 
   function render() {
     list.replaceChildren();
+    const noChats = destinations.length === 0;
+    emptyState.hidden = !noChats || discovering || discoveryError;
+    list.hidden = sendButton.hidden = noChats;
+    noticeList.replaceChildren();
+    noticeList.hidden = !notices.length;
+    for (const notice of notices) {
+      const line = document.createElement("p");
+      line.append(document.createTextNode(notice.message + " "));
+      const link = document.createElement("a");
+      link.textContent = notice.label;
+      link.href = notice.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+      line.append(link); noticeList.append(line);
+    }
     const query = search.value.trim().toLowerCase();
-    const visible = destinations.filter((item) => `${item.providerName} ${item.title} ${item.label}`.toLowerCase().includes(query));
-    for (const provider of AIProviders.all) {
-      const items = visible.filter((item) => item.providerId === provider.id);
-      if (!items.length) continue;
-      const group = document.createElement("section");
-      group.className = "destination-group";
-      group.setAttribute("aria-label", provider.name);
-      const heading = document.createElement("h3");
-      heading.className = "destination-provider";
-      heading.textContent = provider.name;
-      group.append(heading);
-      list.append(group);
+    const providers = AIProviders.all.filter((provider) => destinations.some((item) => item.providerId === provider.id));
+    if (!providers.some((provider) => provider.id === activeProvider)) activeProvider = providers[0]?.id || null;
+    renderTabs(providers);
+    list.setAttribute("aria-labelledby", activeProvider ? `provider-${activeProvider}` : "providerTabs");
+    const visible = destinations.filter((item) => item.providerId === activeProvider && `${item.providerName} ${item.title} ${item.label}`.toLowerCase().includes(query));
+    {
+      const items = visible;
       for (const item of items) {
         const row = document.createElement("div");
         row.className = "destination-row";
@@ -48,6 +62,7 @@ const destinationUI = (() => {
         checkbox.disabled = busy || discovering || !!item.unavailable || ["sent", "review", "unsupported"].includes(statuses.get(item.id)?.state);
         checkbox.addEventListener("change", () => {
           checkbox.checked ? selection.add(item.id) : selection.delete(item.id);
+          renderTabs(providers);
           updateButton();
         });
         const description = document.createElement("div");
@@ -63,8 +78,8 @@ const destinationUI = (() => {
         description.append(title, details);
         const status = statuses.get(item.id);
         if (status || item.unavailable) {
-          const state = status?.state || (item.unsupported ? "unsupported" : "unavailable");
-          const labels = { sent: "Sent", sending: "Sending…", failed: "Failed", review: "Needs review", unsupported: "Unsupported", unavailable: "Unavailable" };
+          const state = status?.state || (item.discoveryOnly ? "discovery-only" : "unavailable");
+          const labels = { sent: "Sent", sending: "Sending…", failed: "Failed", review: "Needs review", unsupported: "Unsupported", unavailable: "Unavailable", "discovery-only": "Discovery only" };
           const feedback = document.createElement(["sent", "sending"].includes(state) ? "span" : "details");
           feedback.className = `destination-feedback ${state}`;
           if (feedback.tagName === "DETAILS") {
@@ -77,7 +92,7 @@ const destinationUI = (() => {
           description.append(feedback);
         }
         row.append(checkbox, description);
-        group.append(row);
+        list.append(row);
       }
     }
     if (!visible.length) {
@@ -86,21 +101,86 @@ const destinationUI = (() => {
       empty.textContent = destinations.length ? "No matching conversations." : "No AI conversations found. Open a chat, then refresh.";
       list.append(empty);
     }
-    search.hidden = destinations.length < 5 && !search.value;
+    search.hidden = noChats || (destinations.length < 5 && !search.value);
     updateButton();
+  }
+
+  function selectProvider(id, focus = false) {
+    activeProvider = id;
+    search.value = "";
+    render();
+    list.scrollTop = 0;
+    const tab = document.getElementById(`provider-${id}`);
+    if (focus) tab?.focus();
+    tab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  function renderTabs(providers) {
+    const scroll = tabs.scrollLeft;
+    const focused = tabs.contains(document.activeElement) ? document.activeElement.id : null;
+    tabs.replaceChildren();
+    for (const provider of providers) {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "provider-tab";
+      tab.id = `provider-${provider.id}`;
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(activeProvider === provider.id));
+      tab.setAttribute("aria-controls", "destinationList");
+      tab.tabIndex = activeProvider === provider.id ? 0 : -1;
+      const icon = document.createElement("span");
+      icon.className = `provider-icon provider-icon-${provider.id}`;
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = { chatgpt: "◎", claude: "✳", gemini: "✦", deepseek: "D", perplexity: "P", copilot: "C", grok: "G", mistral: "M", meta: "∞", poe: "P" }[provider.id];
+      const favicon = destinations.find((item) => item.providerId === provider.id && item.favicon)?.favicon;
+      if (favicon) {
+        const image = document.createElement("img");
+        image.alt = ""; image.referrerPolicy = "no-referrer";
+        image.addEventListener("load", () => icon.replaceChildren(image), { once: true });
+        image.src = favicon;
+      }
+      const label = document.createElement("span");
+      label.textContent = provider.name;
+      tab.append(icon, label);
+      const count = destinations.filter((item) => item.providerId === provider.id && selection.has(item.id)).length;
+      if (count) {
+        const badge = document.createElement("span");
+        badge.className = "provider-count"; badge.textContent = count;
+        tab.append(badge);
+      }
+      const results = destinations.filter((item) => item.providerId === provider.id).map((item) => statuses.get(item.id)?.state);
+      tab.classList.toggle("has-attention", results.some((state) => ["failed", "review"].includes(state)));
+      tab.title = [provider.name, count ? `${count} selected` : "", ...new Set(results.filter(Boolean))].filter(Boolean).join(" · ");
+      tab.setAttribute("aria-label", tab.title);
+      tab.addEventListener("click", () => selectProvider(provider.id));
+      tab.addEventListener("keydown", (event) => {
+        const index = providers.indexOf(provider);
+        const next = { ArrowRight: (index + 1) % providers.length, ArrowLeft: (index - 1 + providers.length) % providers.length,
+          Home: 0, End: providers.length - 1 }[event.key];
+        if (next === undefined) return;
+        event.preventDefault(); selectProvider(providers[next].id, true);
+      });
+      tabs.append(tab);
+    }
+    tabs.hidden = !providers.length;
+    tabs.scrollLeft = scroll;
+    if (focused) document.getElementById(focused)?.focus({ preventScroll: true });
   }
 
   async function refresh() {
     if (busy) return;
     const version = ++generation;
     discovering = true;
+    discoveryError = false;
     refreshButton.disabled = true;
     sendButton.disabled = true;
     note.textContent = "Finding conversations…";
     render();
     try {
-      const found = await ChatDestinations.discover();
+      const overview = await ChatDestinations.discoverOverview();
       if (version !== generation) return;
+      const found = overview.destinations;
+      notices = overview.notices;
       const previous = new Map(destinations.map((item) => [item.id, item]));
       selection = new Set(found.filter((item) => selection.has(item.id) && !item.unavailable &&
         previous.get(item.id)?.url === item.url && previous.get(item.id)?.incognito === item.incognito).map((item) => item.id));
@@ -112,7 +192,8 @@ const destinationUI = (() => {
       render();
     } catch (error) {
       if (version !== generation) return;
-      selection.clear(); destinations = []; render();
+      discoveryError = true;
+      selection.clear(); destinations = []; notices = []; render();
       note.textContent = `Could not find conversations: ${error.message}`;
     } finally {
       if (version === generation) { discovering = false; refreshButton.disabled = false; render(); }
@@ -125,23 +206,22 @@ const destinationUI = (() => {
       !["sent", "review", "unsupported"].includes(statuses.get(item.id)?.state));
     busy = true;
     refreshButton.disabled = search.disabled = true;
-    document.getElementById("takeScreenshot").disabled = true;
     note.textContent = "Keep popup open while sending.";
     try {
       const results = await ChatDestinations.sendSelected(chosen, capture, delivery, (id, result) => {
         statuses.set(id, result);
-        if (["sent", "review", "unsupported"].includes(result.state)) selection.delete(id);
+        if (["sent", "review", "unsupported", "unavailable"].includes(result.state)) selection.delete(id);
         render();
       });
       const sent = results.filter((result) => result.state === "sent").length;
       const review = results.filter((result) => result.state === "review").length;
       const unsupported = results.filter((result) => result.state === "unsupported").length;
-      const failed = results.length - sent - review - unsupported;
-      note.textContent = [`${sent} sent`, failed ? `${failed} failed` : "", review ? `${review} need review` : "", unsupported ? `${unsupported} unsupported` : ""].filter(Boolean).join(" · ");
+      const unavailable = results.filter((result) => result.state === "unavailable").length;
+      const failed = results.length - sent - review - unsupported - unavailable;
+      note.textContent = [`${sent} sent`, failed ? `${failed} failed` : "", review ? `${review} need review` : "", unsupported ? `${unsupported} unsupported` : "", unavailable ? `${unavailable} unavailable` : ""].filter(Boolean).join(" · ");
     } finally {
       busy = false;
       refreshButton.disabled = search.disabled = false;
-      document.getElementById("takeScreenshot").disabled = false;
       render();
     }
   });

@@ -13,17 +13,19 @@ const ChatDestinations = (() => {
       Number(b.windowId === currentWindowId) - Number(a.windowId === currentWindowId) ||
       a.windowId - b.windowId || a.index - b.index).map((tab) => {
       const { provider, conversation } = AIProviders.match(tab.url);
-      const unsupported = provider.sending ? null : "Sending has not been verified for this provider.";
+      const discoveryOnly = provider.sending ? null : provider.limitation;
       return {
         id: tab.id, windowId: tab.windowId, url: identity(tab.url), incognito: !!tab.incognito,
         providerId: provider.id, providerName: provider.name, conversation,
-        unsupported,
+        // Use Chrome's known favicon, never a third-party favicon lookup service.
+        favicon: safeFavicon(tab.favIconUrl, provider),
+        discoveryOnly,
         title: tab.title?.trim() || "New chat",
         label: [tab.incognito ? "Incognito" : null,
           tab.windowId === currentWindowId ? "This window" : `Other window ${otherWindows.indexOf(tab.windowId) + 1}`,
           `Tab ${tab.index + 1}`, tab.active ? "Active" : "Background"].filter(Boolean).join(" · "),
         unavailable: tab.discarded || tab.frozen ? "Open this tab to load it, then refresh." :
-          tab.pendingUrl || tab.status === "loading" ? "This tab is loading. Refresh when ready." : unsupported,
+          tab.pendingUrl || tab.status === "loading" ? "This tab is loading. Refresh when ready." : discoveryOnly,
       };
     });
     const conversations = new Map();
@@ -37,13 +39,34 @@ const ChatDestinations = (() => {
     }).map((item) => ({ ...item, label: item.label + (item.copies ? ` · Open in ${item.copies} tabs` : "") }));
   }
 
+  function safeFavicon(rawUrl, provider) {
+    try {
+      const url = new URL(rawUrl);
+      return url.protocol === "https:" && provider.hosts.includes(url.hostname) && !url.username && !url.password
+        ? url.href : null;
+    } catch { return null; }
+  }
+
   async function discover() {
+    return (await discoverOverview()).destinations;
+  }
+
+  async function discoverOverview() {
     const [tabs, window, incognitoAllowed] = await Promise.all([
       chrome.tabs.query({ url: AIProviders.patterns }),
       chrome.windows.getCurrent(),
       chrome.extension.isAllowedIncognitoAccess(),
     ]);
-    return describeTabs(tabs, window.id, incognitoAllowed);
+    const notices = new Map();
+    for (const tab of tabs) {
+      if (tab.incognito && !incognitoAllowed) continue;
+      const provider = AIProviders.landing(tab.url);
+      if (provider) notices.set(provider.id, {
+        providerId: provider.id, message: `${provider.name} is open on its website, not in a chat.`,
+        label: `Open ${provider.name} chat`, url: provider.chatUrl,
+      });
+    }
+    return { destinations: describeTabs(tabs, window.id, incognitoAllowed), notices: [...notices.values()] };
   }
 
   async function validate(destination) {
@@ -69,8 +92,8 @@ const ChatDestinations = (() => {
       let result;
       try {
         if (!AIProviders.get(destination.providerId)?.sending) {
-          const error = new Error("Sending has not been verified for this provider.");
-          error.unsupported = true;
+          const error = new Error(AIProviders.get(destination.providerId)?.limitation || "No sending adapter is available for this provider.");
+          error.unavailable = true;
           throw error;
         }
         await validate(destination);
@@ -82,7 +105,7 @@ const ChatDestinations = (() => {
         }
         result = { state: "sent", message: "Sent" };
       } catch (error) {
-        result = { state: error.needsReview ? "review" : error.unsupported ? "unsupported" : "failed",
+        result = { state: error.needsReview ? "review" : error.unsupported ? "unsupported" : error.unavailable ? "unavailable" : "failed",
           message: error.message || "Could not send to this chat." };
       }
       results.push({ id: destination.id, ...result });
@@ -90,5 +113,5 @@ const ChatDestinations = (() => {
     }
     return results;
   }
-  return { identity, describeTabs, discover, validate, sendSelected };
+  return { identity, describeTabs, discover, discoverOverview, validate, sendSelected };
 })();

@@ -13,11 +13,17 @@
         "https://claude.ai/*",
         "https://gemini.google.com/*",
         "https://chat.deepseek.com/*",
+        "https://www.deepseek.com/*",
+        "https://deepseek.com/*",
         "https://perplexity.ai/*",
         "https://www.perplexity.ai/*",
         "https://copilot.microsoft.com/*",
         "https://grok.com/*",
-        "https://chat.mistral.ai/*"
+        "https://chat.mistral.ai/*",
+        "https://www.meta.ai/*",
+        "https://meta.ai/*",
+        "https://poe.com/*",
+        "https://www.poe.com/*"
     ],
     "permissions": [
         "activeTab",

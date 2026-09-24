@@ -1,4 +1,3 @@
-const button = document.getElementById("takeScreenshot");
 const preview = document.getElementById("preview");
 
 const CAPTURE_INTERVAL_MS = 650;
@@ -315,11 +314,11 @@ document.getElementById("zoomPreview").addEventListener("click", (event) => {
   event.currentTarget.textContent = actual ? "Fit" : "100%";
 });
 
-button.addEventListener("click", async () => {
+let captureStarted = false;
+async function startPopupCapture(sourceTab) {
+  if (captureStarted) return;
+  captureStarted = true;
   destinationUI.suspend();
-  button.disabled = true;
-  button.setAttribute("aria-busy", "true");
-  document.getElementById("buttonLabel").textContent = "Capturing…";
   progressValue = 0;
   document.getElementById("progressFill").style.width = "0%";
   document.getElementById("captureProgress").hidden = false;
@@ -330,7 +329,7 @@ button.addEventListener("click", async () => {
   showTextStats({ characters: 0, estimatedTokens: 0 });
   setStatus("capturing", "Capturing…", "Keep popup open.");
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = await sourceTab;
     if (!tab?.id) throw new Error("No active tab was found.");
     const result = await captureFullPage(tab);
     capturedPage = result;
@@ -352,7 +351,8 @@ button.addEventListener("click", async () => {
     await destinationUI.show(result);
   } catch (error) {
     console.error(error);
-    setStatus("error", "Couldn’t capture this page", friendlyError(error));
+    document.querySelector("#emptyState h2").textContent = "Preview unavailable";
+    setStatus("error", "Couldn’t capture this page", `${friendlyError(error)} Close and reopen the popup to retry.`);
     document.getElementById("pageText").hidden = !capturedPage;
     if (capturedPage) {
       showTextStats(capturedPage);
@@ -360,10 +360,6 @@ button.addEventListener("click", async () => {
       destinationUI.resume();
     }
   } finally {
-    button.disabled = false;
-    button.removeAttribute("aria-busy");
     document.getElementById("captureProgress").hidden = true;
-    document.getElementById("buttonLabel").textContent =
-      document.body.dataset.state === "error" ? "Try again" : "Capture again";
   }
-});
+}

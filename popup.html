@@ -21,8 +21,7 @@
         <button id="zoomPreview" class="zoom-button" type="button" aria-pressed="false" aria-label="Show screenshot at actual size">100%</button>
       </div>
       <div id="emptyState" class="empty-state">
-        <h2>No capture</h2>
-        <p>Capture the current page’s screenshot and text.</p>
+        <h2>Preparing preview…</h2>
       </div>
       <div id="previewViewport" class="preview-viewport" tabindex="0" aria-label="Scrollable screenshot preview" hidden>
         <img id="preview" alt="Captured full-page screenshot">
@@ -49,15 +48,17 @@
       <div id="progressFill"></div>
     </div>
 
-    <button id="takeScreenshot" class="capture-button" type="button">
-      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.5 5 8 3h4l1.5 2H16a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 16 17H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 5h2.5Z"/><circle cx="10" cy="10.5" r="3"/></svg>
-      <span id="buttonLabel">Capture page</span>
-    </button>
     <section id="destinations" class="destinations" aria-label="AI conversation destinations" hidden>
       <div class="destination-heading"><h2>Send to</h2>
         <button id="refreshDestinations" class="zoom-button" type="button">Refresh</button></div>
+      <div id="providerTabs" class="provider-tabs" role="tablist" aria-label="AI providers"></div>
+      <div id="noDestinations" class="no-destinations" hidden>
+        <h3>No AI chats open</h3>
+        <p>Open an AI conversation in Chrome, then refresh.</p>
+      </div>
+      <div id="discoveryNotices" class="discovery-notices" hidden></div>
       <input id="destinationSearch" class="destination-search" type="search" placeholder="Find a conversation" aria-label="Find a conversation" hidden>
-      <div id="destinationList" class="destination-list" aria-label="Open conversations"></div>
+      <div id="destinationList" class="destination-list" role="tabpanel" tabindex="0" aria-label="Open conversations"></div>
       <p id="destinationNote" class="destination-note" role="status" aria-live="polite"></p>
       <button id="sendCapture" class="capture-button" type="button" disabled>Select conversations</button>
     </section>
@@ -69,5 +70,6 @@
   <script src="provider-delivery.js"></script>
   <script src="destinations-ui.js"></script>
   <script src="popup.js"></script>
+  <script src="popup-session.js"></script>
 </body>
 </html>
