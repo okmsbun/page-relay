@@ -42,4 +42,6 @@ async function check(file, query) {
   await check("chatgpt-adapter.html", "");
   await check("chatgpt-verification.html", "");
   await check("chatgpt-verification.html", "?unconfirmed");
+  await check("provider-adapters.html", "?provider=claude");
+  await check("provider-adapters.html", "?provider=gemini");
 })().catch((error) => { console.error(error.message); process.exitCode = 1; });

@@ -105,7 +105,9 @@ const ChatDestinations = (() => {
         }
         result = { state: "sent", message: "Sent" };
       } catch (error) {
-        result = { state: error.needsReview ? "review" : error.unsupported ? "unsupported" : error.unavailable ? "unavailable" : "failed",
+        // Only an explicit pre-mutation busy result is safe to retry. Never
+        // infer retry safety from error text or downgrade an uncertain send.
+        result = { state: error.needsReview ? "review" : error.busy === true && error.needsReview === false ? "busy" : error.unsupported ? "unsupported" : error.unavailable ? "unavailable" : "failed",
           message: error.message || "Could not send to this chat." };
       }
       results.push({ id: destination.id, ...result });

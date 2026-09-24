@@ -87,6 +87,27 @@ test("ambiguous submission is marked for review, not reported sent", async () =>
   assert.equal(results[0].state, "review");
 });
 
+test("pre-send busy is temporary, other chats continue, and retry is explicit", async () => {
+  const tabs = [tab(1), tab(2), tab(3), tab(4)];
+  const api = harness({ tabs: { get: async (id) => tabs.find((item) => item.id === id) } });
+  const choices = api.describeTabs(tabs, 10, false);
+  const calls = [];
+  const results = await api.sendSelected(choices, {}, async (destination) => {
+    calls.push(destination.id);
+    if (destination.id === 1) throw Object.assign(new Error("Generating a response"), { busy: true, needsReview: false });
+    if (destination.id === 3) throw new Error("Upload failed");
+    if (destination.id === 4) throw Object.assign(new Error("Uncertain submission"), { busy: true, needsReview: true });
+    return { sent: true };
+  }, () => {});
+  assert.deepEqual(Array.from(results, (result) => result.state), ["busy", "sent", "failed", "review"]);
+  assert.deepEqual(calls, [1, 2, 3, 4]); // No automatic retry.
+  const retried = await api.sendSelected([choices[0]], {}, async (destination) => {
+    calls.push(destination.id); return { sent: true };
+  }, () => {});
+  assert.equal(retried[0].state, "sent");
+  assert.deepEqual(calls, [1, 2, 3, 4, 1]);
+});
+
 test("all ten providers are identified, but unimplemented senders stay discovery-only", () => {
   const api = harness();
   const urls = ["https://chatgpt.com/c/one", "https://claude.ai/chat/two", "https://gemini.google.com/app/three",
@@ -97,7 +118,9 @@ test("all ten providers are identified, but unimplemented senders stay discovery
   assert.deepEqual(Array.from(entries, (item) => item.providerId),
     ["chatgpt", "claude", "gemini", "deepseek", "perplexity", "copilot", "grok", "mistral", "meta", "poe"]);
   assert.equal(entries[0].unavailable, null);
-  assert.ok(entries.slice(1).every((item) => item.discoveryOnly && item.unavailable));
+  assert.equal(entries[1].unavailable, null);
+  assert.equal(entries[2].unavailable, null);
+  assert.ok(entries.slice(3).every((item) => item.discoveryOnly && item.unavailable));
 });
 
 test("provider login, share, marketing pages and spoofed domains are excluded", () => {
@@ -112,7 +135,7 @@ test("provider login, share, marketing pages and spoofed domains are excluded", 
 });
 
 test("discovery-only destinations cannot reach an adapter; later selected chats still send", async () => {
-  const tabs = [tab(1, 10, { url: "https://claude.ai/chat/test" }), tab(2)];
+  const tabs = [tab(1, 10, { url: "https://chat.deepseek.com/a/chat/s/test" }), tab(2)];
   const api = harness({ tabs: { get: async (id) => tabs.find((item) => item.id === id) } });
   const calls = [];
   const results = await api.sendSelected(api.describeTabs(tabs, 10, false), {}, async (destination) => {

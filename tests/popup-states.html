@@ -82,16 +82,15 @@
     assert(doc.getElementById("destinationList").textContent.includes("Incognito") && doc.getElementById("destinationList").textContent.includes("Other window"), "window and incognito labels retained");
     doc.getElementById("destination-10").click();
     chooseProvider("claude");
-    assert(doc.querySelectorAll(".destination-row").length === 1 && doc.getElementById("destination-13").disabled, "unverified Claude remains unavailable");
-    assert(doc.querySelector(".destination-feedback.discovery-only"), "unimplemented integration is labelled discovery-only, not a service limitation");
+    assert(doc.querySelectorAll(".destination-row").length === 1 && !doc.getElementById("destination-13").disabled, "verified Claude is selectable");
+    assert(!doc.querySelector(".destination-feedback.discovery-only"), "verified Claude is not labelled discovery-only");
     chooseProvider("gemini");
-    assert(doc.getElementById("destination-14").disabled, "unverified Gemini remains unavailable");
+    assert(!doc.getElementById("destination-14").disabled, "verified Gemini is selectable");
     chooseProvider("chatgpt");
     assert(doc.getElementById("destination-10").checked, "selection survives provider switches");
     doc.getElementById("provider-chatgpt").dispatchEvent(new win.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
     assert(doc.getElementById("provider-claude").getAttribute("aria-selected") === "true", "keyboard arrow changes provider");
-    // Test-only capability and fake delivery; production Claude remains disabled.
-    win.eval('AIProviders.get("claude").sending = true');
+    // The delivery is mocked below; this fixture never sends to a real provider.
     doc.getElementById("refreshDestinations").click(); await wait(30);
     doc.getElementById("destination-13").click();
     chooseProvider("chatgpt"); doc.getElementById("destination-11").click();
@@ -117,6 +116,28 @@
     assert(doc.querySelector(".destination-feedback.failed") && doc.querySelector(".destination-feedback.sent"), "independent results preserved");
     assert(captureCalls.length === 1, "sending never recaptures the destination tab");
     const refresh = async () => { doc.getElementById("refreshDestinations").click(); await wait(30); };
+    let generating = true;
+    const retryCalls = [];
+    win.eval("destinationUI").configureDelivery(async (destination) => {
+      retryCalls.push(destination.id);
+      if (destination.id === 11 && generating) throw Object.assign(new Error("Generating a response. Nothing was sent. Wait, then click Send again."), { busy: true, needsReview: false });
+      return { sent: true };
+    });
+    chooseProvider("gemini"); doc.getElementById("destination-14").click();
+    doc.getElementById("sendCapture").click(); await wait(60);
+    assert(retryCalls.join(",") === "11,14", "busy destination does not prevent other providers from sending");
+    assert(doc.getElementById("destinationNote").textContent === "1 sent · 1 busy (wait, then click Send again)", "busy is counted separately from failures");
+    assert(doc.getElementById("provider-chatgpt").classList.contains("has-busy") && !doc.getElementById("provider-chatgpt").classList.contains("has-attention"), "hidden busy provider has a non-error indicator");
+    chooseProvider("chatgpt");
+    assert(doc.querySelector(".destination-feedback.busy summary").textContent.includes("Generating") && !doc.querySelector(".destination-feedback.failed"), "busy row is not labelled Failed");
+    assert(doc.getElementById("destination-11").checked && !doc.getElementById("destination-11").disabled && !doc.getElementById("sendCapture").disabled, "busy destination stays selected and allows a manual retry");
+    generating = false;
+    await refresh(); await wait(60);
+    assert(retryCalls.join(",") === "11,14" && doc.querySelector(".destination-feedback.busy"), "refresh and elapsed time never automatically retry a busy send");
+    doc.getElementById("sendCapture").click(); await wait(60);
+    assert(retryCalls.join(",") === "11,14,11", "manual retry sends only the pending destination, never successful chats");
+    assert(!doc.querySelector(".destination-feedback.busy") && doc.getElementById("destination-11").disabled, "successful retry clears busy state and prevents another submission");
+    assert(captureCalls.length === 1, "busy retry reuses the original capture");
     const originalChats = chats.slice();
     chats.splice(0, chats.length, originalChats[0], { id: 15, windowId: 3, index: 3, title: "DeepSeek chat", url: "https://chat.deepseek.com/a/chat/s/test", incognito: false });
     await refresh();

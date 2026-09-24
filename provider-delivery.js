@@ -1,6 +1,6 @@
 /* Route sends only to explicitly enabled, verified integration adapters. */
 async function deliverToDestination(destination, capture) {
-  const adapters = { chatgpt: deliverToChatGPT };
+  const adapters = { chatgpt: deliverToChatGPT, claude: deliverToClaude, gemini: deliverToGemini };
   const adapter = adapters[destination.providerId];
   if (!AIProviders.get(destination.providerId)?.sending || !adapter) {
     const error = new Error(AIProviders.get(destination.providerId)?.limitation || "No sending adapter is available for this provider.");

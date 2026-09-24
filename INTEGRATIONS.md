@@ -22,20 +22,21 @@ symbol fallback; no third-party favicon service or extra permission is used.
 | Provider | Recognized chat routes | Sending |
 | --- | --- | --- |
 | ChatGPT | New chats, `/c/…`, custom GPT conversations | Enabled; existing user-confirmed adapter, regression fixtures |
-| Claude | `/new`, `/chat/…` | Discovery only: adapter not implemented; signed-in DOM inspection blocked by Chrome's Apple Events setting |
-| Gemini | `/app`, `/app/…`, account-prefixed `/u/N/app/…` | Discovery only: adapter not implemented; signed-in DOM inspection blocked by Chrome's Apple Events setting |
-| DeepSeek | `chat.deepseek.com/`, `/a/chat/s/…` | Discovery only: image acceptance, full-text delivery and outgoing-turn confirmation unverified |
-| Perplexity | `/`, `/search/…` | Discovery only: combined-upload readiness and outgoing-turn confirmation unverified |
-| Microsoft Copilot | `/`, `/chats/…` | Discovery only: attachment controls, draft detection and full-context delivery unverified |
-| Grok | `/`, `/c/…`, `/chat/…` | Discovery only: both-file readiness and outgoing-turn confirmation unverified |
-| Meta AI | `meta.ai` / `www.meta.ai`: `/`, `/new`, `/c/…` | Discovery only: signed-in composer and complete-context attachment support unverified |
-| Mistral Vibe Chat | `chat.mistral.ai/chat`, `/chat/…` | Discovery only: current upload readiness, draft protection and outgoing-turn confirmation unverified |
-| Poe | `poe.com` / `www.poe.com`: `/`, `/chat/…` | Discovery only: per-bot image/file capabilities and delivery confirmation unverified |
+| Claude | `/new`, `/chat/…` | Enabled; live PNG + TXT send, draft/attachment protection and persisted outgoing turn verified |
+| Gemini | `/app`, `/app/…`, account-prefixed `/u/N/app/…` | Enabled; live PNG + TXT send, draft/attachment protection and persisted outgoing turn verified |
+| DeepSeek | `chat.deepseek.com/`, `/a/chat/s/…` | Discovery only: composer/file control inspected; full attachment/draft/delivery flow unverified |
+| Perplexity | `/`, `/search/…` | Discovery only: composer/file control inspected; full attachment/draft/delivery flow unverified |
+| Microsoft Copilot | `/`, `/chats/…` | Discovery only: verification reached account authorization consent |
+| Grok | `/`, `/c/…`, `/chat/…` | Discovery only: guest composer inspected; messaging requires agreement to terms |
+| Meta AI | `meta.ai` / `www.meta.ai`: `/`, `/new`, `/c/…` | Discovery only: redirected to Meta authentication |
+| Mistral Vibe Chat | `chat.mistral.ai/chat`, `/chat/…` | Discovery only: sign-in required before composer inspection |
+| Poe | `poe.com` / `www.poe.com`: `/`, `/chat/…` | Discovery only: composer/file control inspected; per-bot attachment/draft/delivery flow unverified |
 
 These are limitations of the extension's current implementation and verification,
 not proven limitations of the services. **Discovery only** must not be confused
-with **Unsupported** (a demonstrated capability mismatch). Only ChatGPT has an
-implemented sender. No new provider has been live-verified in this change.
+with **Unsupported** (a demonstrated capability mismatch). ChatGPT, Claude and
+Gemini have enabled senders. The other seven services have no sending adapter;
+their discovery remains available on recognized chat routes, not login routes.
 
 Provider tabs are derived from the latest matching open conversations, never
 from the whole registry. Refresh adds new providers, removes closed providers,
@@ -73,8 +74,20 @@ manifest agreement. Reload the extension to apply newly added host permissions.
 - Public access to Meta AI did not expose a signed-in composer. Meta/Poe route
   recognition is conservative and fixture-tested, not a live sending claim.
 
-No session cookies, private APIs, profile copies, DevTools Protocol, or bypass of
-Chrome's disabled Apple Events JavaScript setting were used to obtain access.
+Live inspection on 2026-09-24 used Chrome's Apple Events JavaScript after the user
+enabled it. No session cookies, private APIs, profile copies, DevTools Protocol,
+or security-setting bypass were used. Account sign-in/authorization and service
+terms were not accepted automatically. Gemini's first-use upload dialog was
+accepted manually by the user before testing continued.
+
+DeepSeek and Poe initially redirected to login, but a later read-only inspection
+found empty composers and file controls. Perplexity also exposed a composer and
+file control. That alone does not establish authenticated attachment support or
+safe delivery, so no senders were enabled for them. Copilot showed account
+authorization and later a sign-in portal at `copilot.com`; that portal is not
+treated as a verified conversation route. Grok showed guest messaging terms,
+Meta authentication, and Vibe a sign-in prompt. Further signed-in tests and any
+required user consent are still needed for these seven providers.
 
 Recognition identifies a candidate from Chrome's URL and title, not a guarantee
 that the tab is signed in or supports sending. Unknown routes, shared read-only
@@ -114,6 +127,56 @@ refresh after a new-chat URL becomes a conversation URL. There is no automatic
 retry. Popup closure interrupts the queue; an already-injected send may finish.
 Keep the popup open and inspect the destination before any manual retry.
 
+### Busy destinations
+
+If an enabled provider's adapter detects an ongoing response before changing the
+composer or uploading files, the destination reports **Busy · Generating a
+response**, not Failed. No message was submitted by that attempt. Other selected
+destinations continue; the busy destination stays selected for an explicit Send
+click once generation finishes. Refreshing, waiting, or switching provider tabs
+does not submit it automatically. Previously sent destinations remain disabled.
+
+Busy is a structured pre-mutation result, not a guess based on error wording.
+Real errors remain Failed; uncertain results after modifying the composer or
+attempting submission remain Needs review and cannot be retried in that popup
+session. There is no automatic continuation or duplicate Send click.
+
+## Claude and Gemini live verification
+
+Both provider adapters were exercised in separate disposable signed-in chats
+with a synthetic blue-square PNG and a TXT file containing a unique sample
+marker. No real captured page or personal data was sent. Each provider received
+both files and answered with the image contents and text marker. Each adapter
+returned `sent: true` only after finding its unique prompt marker and evidence
+of both attachments on the outgoing user turn. Those turns and attachments
+remained present after reloading the chats.
+
+For each provider, a nonempty test draft was rejected without changing its text
+or uploading anything. A separate existing-attachment test was also rejected
+without removing that attachment. Only test-created drafts/attachments were
+cleaned up. The successful test conversations were left open for inspection.
+
+The live tests executed the same injected adapter functions through Apple Events;
+they were not an end-to-end click-through of the packaged extension popup.
+Queue dispatch, popup selection, editor replacement, upload errors, edits during
+preparation, missing/partial delivery proof, and Gemini tab restoration are
+covered separately by local automated fixtures. Real network-failure injection
+and every account/locale variant have not been live-tested.
+
+Gemini mounts its upload controls reliably only in an active tab. Its integration
+temporarily activates the selected destination within its window, without
+focusing another window, then restores the previous tab if the user has not
+switched tabs meanwhile. Capture and text extraction do not participate in this
+behavior. Its two upload controls receive PNG then TXT; upload consent is never
+accepted by the adapter. Gemini may add a suffix to the PNG filename, so delivery
+matches its prepared image source and the TXT filename, plus the unique prompt.
+Claude matches both attachment filenames on its outgoing user turn.
+
+Both adapters click Send at most once. An upload/edit/error after modifying the
+composer, an interrupted injection, or incomplete delivery proof reports
+**Needs review**, not Sent, and leaves the draft for inspection. A composer
+clearing alone is not success. Existing drafts fail safely before mutation.
+
 ## Testing
 
 Run `node --test tests/*.test.cjs` and `node tests/browser-check.cjs`.
@@ -123,14 +186,15 @@ authenticated provider end-to-end tests. No real messages are sent by these test
 
 1. Reload **Page capture** at `chrome://extensions`; review any new site-access
    permissions. Keep the popup architecture enabled (there is no Side Panel).
-2. Open two disposable ChatGPT conversations in different windows and an empty
-   new chat. Capture a nonsensitive page, select those destinations, then Send.
+2. Open disposable ChatGPT, Claude and Gemini conversations, including an empty
+   new chat. Open the popup on a nonsensitive source page, let capture finish,
+   select those destinations across provider tabs, then Send.
    Confirm PNG plus the unmodified `.txt` attachment in each destination and
    **Sent** in the popup. Test a new chat's URL transition as well.
 3. Repeat with an existing draft or existing attachment in one chat. That chat
    must remain untouched and report Failed, while the other selected chat sends.
-4. Open Claude and the other listed providers on recognized conversation URLs.
-   Refresh and switch provider tabs: each should appear with a disabled checkbox and
+4. Open the other seven providers on recognized conversation URLs. Refresh and
+   switch provider tabs: these should appear with disabled checkboxes and
    **Discovery only**. Expand the status to read the reason. Search by provider or
    title. Check window and Incognito labels; no sending is attempted to these tabs.
 5. A failed/uncertain upload must not trigger another Send. Inspect the real chat
@@ -143,12 +207,12 @@ authenticated provider end-to-end tests. No real messages are sent by these test
    any website notice remain in the destinations section. Reopen one and refresh
    to confirm the provider tabs/list return without losing the page capture.
 
-Live Claude/Gemini verification was attempted but blocked by Chrome's disabled
-**View → Developer → Allow JavaScript from Apple Events** setting. No live
-attachment or message was sent, and neither provider was enabled. This is a test
-access blocker, not evidence that either service cannot accept the capture.
+8. For Gemini, verify the temporary destination activation returns to the source
+   tab. Keep the popup open; if it closes or any result is uncertain, inspect the
+   destination before starting another capture/send. An already-injected operation
+   can finish after popup closure. Complete any first-use upload consent yourself.
 
-## Enabling another provider (Claude is next for manual verification)
+## Enabling another provider
 
 File support alone is not adapter verification. For example,
 [Claude's upload documentation](https://support.claude.com/en/articles/8241126-upload-files-to-claude)

@@ -22,6 +22,7 @@ async function deliverToChatGPT(destination, capture) {
   if (!result?.sent) {
     const error = new Error(result?.error || "Delivery could not be confirmed. Check this chat before retrying.");
     error.needsReview = result?.needsReview ?? true;
+    error.busy = result?.busy === true && result.needsReview === false;
     throw error;
   }
   return result;
@@ -96,7 +97,11 @@ async function submitCaptureToComposer(payload) {
     let composer = getComposer();
     let form = composer?.closest("form");
     if (!visible(composer) || !form) throw new Error("ChatGPT’s message composer is unavailable. Open this chat and sign in, then retry.");
-    if (document.querySelector('[data-testid="stop-button"]')) throw new Error("This chat is generating a response. Wait and retry.");
+    // Busy is retryable only here, before attaching, editing, or submitting.
+    if (document.querySelector('[data-testid="stop-button"]')) return {
+      sent: false, busy: true, needsReview: false,
+      error: "Generating a response. Nothing was sent. Wait for it to finish, then click Send again.",
+    };
     if (composerText(composer)) throw new Error("This chat has an unsent draft. Send or clear it first.");
     const removeButtons = () => [...form.querySelectorAll('button[aria-label]')].filter((button) =>
       /remove.*(file|attachment|image)|(file|attachment|image).*remove/i.test(button.getAttribute("aria-label")));

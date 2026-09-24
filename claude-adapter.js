@@ -16,6 +16,7 @@ async function deliverToClaude(destination, capture) {
   if (result?.sent) return result;
   const error = new Error(result?.error || "Delivery was not confirmed. Check this Claude chat.");
   error.needsReview = result?.needsReview ?? true;
+  error.busy = result?.busy === true && result.needsReview === false;
   throw error;
 }
 
@@ -64,7 +65,11 @@ async function submitToClaude(payload) {
     if (!composer || !container) throw new Error("Claude’s composer is unavailable. Open this chat and sign in.");
     if (normalize(composer.innerText)) throw new Error("This chat has an unsent draft. Send or clear it first.");
     if (container.querySelector('[data-testid="file-thumbnail"],[data-cds-attachment]')) throw new Error("This chat already has attachments. Send or remove them first.");
-    if (document.querySelector('[data-testid="stop-response"]') || errorVisible()) throw new Error("Claude is busy or showing an error. Check the chat before retrying.");
+    if (errorVisible()) throw new Error("Claude is showing an error. Check the chat before retrying.");
+    if (document.querySelector('[data-testid="stop-response"]')) return {
+      sent: false, busy: true, needsReview: false,
+      error: "Generating a response. Nothing was sent. Wait for it to finish, then click Send again.",
+    };
     const inputs = [...document.querySelectorAll('input[data-testid="file-upload"][type="file"]')];
     if (inputs.length !== 1 || !inputs[0].multiple || inputs[0].disabled || inputs[0].accept) throw new Error("Claude’s upload control has changed. Nothing was sent.");
     const input = inputs[0];

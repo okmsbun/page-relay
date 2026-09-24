@@ -35,6 +35,13 @@
     screenshot: "data:image/png;base64,aGVsbG8=", text: "Page text\nRevenue\nRevenue", prompt: "Captured page context [test-delivery]",
     png: "page-test.png", txt: "page-test.txt", deliveryId: "test-delivery" };
   try {
+    const stop = document.createElement("button"); stop.dataset.testid = "stop-button";
+    document.body.append(stop);
+    const busy = await submitCaptureToComposer(payload);
+    assert(!busy.sent && busy.busy && busy.needsReview === false && !input.files.length && clicks === 0 && !composer.innerText,
+      "generation is busy with no draft mutation, uploads, or submission");
+    assert(!window.__pageCaptureSending, "busy detection leaves no send lock");
+    stop.remove();
     composer.textContent = "Existing draft";
     const draft = await submitCaptureToComposer(payload);
     assert(!draft.sent && !draft.needsReview && composer.innerText === "Existing draft", "existing draft is preserved");

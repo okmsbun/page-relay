@@ -79,7 +79,7 @@ const destinationUI = (() => {
         const status = statuses.get(item.id);
         if (status || item.unavailable) {
           const state = status?.state || (item.discoveryOnly ? "discovery-only" : "unavailable");
-          const labels = { sent: "Sent", sending: "Sending…", failed: "Failed", review: "Needs review", unsupported: "Unsupported", unavailable: "Unavailable", "discovery-only": "Discovery only" };
+          const labels = { sent: "Sent", sending: "Sending…", busy: "Busy · Generating a response", failed: "Failed", review: "Needs review", unsupported: "Unsupported", unavailable: "Unavailable", "discovery-only": "Discovery only" };
           const feedback = document.createElement(["sent", "sending"].includes(state) ? "span" : "details");
           feedback.className = `destination-feedback ${state}`;
           if (feedback.tagName === "DETAILS") {
@@ -150,6 +150,7 @@ const destinationUI = (() => {
       }
       const results = destinations.filter((item) => item.providerId === provider.id).map((item) => statuses.get(item.id)?.state);
       tab.classList.toggle("has-attention", results.some((state) => ["failed", "review"].includes(state)));
+      tab.classList.toggle("has-busy", results.includes("busy"));
       tab.title = [provider.name, count ? `${count} selected` : "", ...new Set(results.filter(Boolean))].filter(Boolean).join(" · ");
       tab.setAttribute("aria-label", tab.title);
       tab.addEventListener("click", () => selectProvider(provider.id));
@@ -217,8 +218,9 @@ const destinationUI = (() => {
       const review = results.filter((result) => result.state === "review").length;
       const unsupported = results.filter((result) => result.state === "unsupported").length;
       const unavailable = results.filter((result) => result.state === "unavailable").length;
-      const failed = results.length - sent - review - unsupported - unavailable;
-      note.textContent = [`${sent} sent`, failed ? `${failed} failed` : "", review ? `${review} need review` : "", unsupported ? `${unsupported} unsupported` : "", unavailable ? `${unavailable} unavailable` : ""].filter(Boolean).join(" · ");
+      const waiting = results.filter((result) => result.state === "busy").length;
+      const failed = results.filter((result) => result.state === "failed").length;
+      note.textContent = [`${sent} sent`, waiting ? `${waiting} busy (wait, then click Send again)` : "", failed ? `${failed} failed` : "", review ? `${review} need review` : "", unsupported ? `${unsupported} unsupported` : "", unavailable ? `${unavailable} unavailable` : ""].filter(Boolean).join(" · ");
     } finally {
       busy = false;
       refreshButton.disabled = search.disabled = false;
