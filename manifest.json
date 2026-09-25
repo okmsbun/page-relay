@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "PageRelay",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "minimum_chrome_version": "116",
     "description": "Capture a full-page screenshot and rendered page text, then prepare that context in a supported AI chat.",
     "action": {
