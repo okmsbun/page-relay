@@ -93,8 +93,36 @@
       assert(doc.getElementById("previewViewport").classList.contains("actual-size"), "actual-size preview works");
       doc.getElementById("zoomPreview").click();
       const chooseProvider = (id) => doc.getElementById("provider-" + id).click();
+      if (location.search.includes("interaction")) {
+        window.panelFixture = { frame, win, doc };
+        document.getElementById("result").textContent = "PASS ready for native input";
+        return;
+      }
       assert(doc.querySelectorAll('[role="tab"]').length === 3, "horizontal tabs for discovered providers");
       assert(doc.querySelectorAll(".provider-icon").length === 3, "each provider has an icon");
+      // Hit-test actual rendered padding/children, rather than calling the button's
+      // .click() directly (which bypasses overlays and pointer-events).
+      const clickPoint = (element, fx, fy) => {
+        element.scrollIntoView({ block: "center", inline: "nearest" });
+        const rect = element.getBoundingClientRect();
+        const target = doc.elementFromPoint(rect.left + rect.width * fx, rect.top + rect.height * fy);
+        assert(target === element || element.contains(target), "visible control owns its hit target");
+        if (element.matches(".provider-tab")) assert(target === element, "provider children share the button's pointer target");
+        target.click();
+      };
+      for (const provider of ["chatgpt", "claude", "gemini"]) {
+        for (const [x, y] of [[0.03, 0.5], [0.97, 0.5], [0.5, 0.08], [0.5, 0.92], [0.3, 0.5]]) {
+          chooseProvider(provider === "claude" ? "gemini" : "claude");
+          clickPoint(doc.getElementById("provider-" + provider), x, y);
+          assert(doc.getElementById("provider-" + provider).getAttribute("aria-selected") === "true", provider + ": padding and content select the entire tab");
+        }
+      }
+      chooseProvider("chatgpt");
+      const row = doc.getElementById("destination-10").closest(".destination-row");
+      clickPoint(row, 0.97, 0.5);
+      assert(doc.getElementById("destination-10").checked, "destination row empty space selects its checkbox");
+      clickPoint(row.querySelector(".destination-detail"), 0.5, 0.5);
+      assert(!doc.getElementById("destination-10").checked, "destination detail toggles selection once");
       assert(doc.querySelectorAll(".destination-row input").length === 3, "only active provider conversations shown");
       assert([...doc.querySelectorAll(".destination-row input")].every((input) => !input.checked), "no automatic selection");
       assert(doc.getElementById("destinationList").textContent.includes("Incognito") && doc.getElementById("destinationList").textContent.includes("Other window"), "window and incognito labels retained");
@@ -122,6 +150,10 @@
       chooseProvider("chatgpt"); doc.getElementById("destination-11").click();
       assert(doc.getElementById("sendCapture").textContent === "Add to 3 chats", "add count includes hidden providers");
       assert(doc.querySelector("#provider-claude .provider-count").textContent === "1", "hidden provider selection count remains visible");
+      const badge = doc.querySelector("#provider-claude .provider-count");
+      clickPoint(badge.closest("button"), 0.9, 0.5);
+      assert(doc.getElementById("provider-claude").getAttribute("aria-selected") === "true", "count badge belongs to the full button target");
+      chooseProvider("chatgpt");
       const search = doc.getElementById("destinationSearch");
       search.value = "Extension"; search.dispatchEvent(new win.Event("input"));
       assert(doc.querySelectorAll(".destination-row").length === 1, "search filters active provider without discarding selection");
@@ -134,12 +166,18 @@
       });
       assert(deliveries.length === 0, "selection alone never adds anything");
       doc.getElementById("sendCapture").click(); await wait(60);
-      assert(deliveries.join(",") === "10,11,13", "add includes selected conversations on hidden provider tabs");
+      assert(deliveries.slice().sort((a, b) => a - b).join(",") === "10,11,13", "add includes selected conversations on hidden provider tabs");
       assert(doc.getElementById("destinationNote").textContent === "2 added to a chat draft · 1 failed", "partial results summarized across providers");
       chooseProvider("claude");
       assert(doc.querySelector(".destination-feedback.prepared"), "hidden provider result retained");
       chooseProvider("chatgpt");
       assert(doc.querySelector(".destination-feedback.failed") && doc.querySelector(".destination-feedback.prepared"), "independent results preserved");
+      const protectedRow = doc.getElementById("destination-10").closest(".destination-row");
+      protectedRow.click();
+      assert(!doc.getElementById("destination-10").checked, "full-row interaction cannot select an already added destination");
+      const failedSummary = doc.getElementById("destination-11").closest(".destination-row").querySelector("summary");
+      failedSummary.click();
+      assert(failedSummary.parentElement.open && doc.getElementById("destination-11").checked, "feedback expands without toggling conversation selection");
       assert(captureCalls.length === 1, "adding never recaptures the destination tab");
       const refresh = async () => { doc.getElementById("refreshDestinations").click(); await wait(30); };
       let generating = true;
@@ -190,6 +228,25 @@
       assert(doc.getElementById("noDestinations").hidden && doc.getElementById("destinationNote").textContent.includes("Test discovery error"), "query failure is not misreported as no open chats");
       discoveryFails = false; chats.splice(0, chats.length, ...originalChats); await refresh();
       assert(!doc.getElementById("destinationList").hidden && doc.querySelectorAll('[role="tab"]').length === 3, "refresh recovers provider views after empty or failed discovery");
+      chats.push({ id: 15, windowId: 2, index: 5, title: "Stalled Gemini", url: "https://gemini.google.com/app/stalled", status: "complete", incognito: false });
+      await refresh(); chooseProvider("gemini");
+      doc.getElementById("destination-15").click();
+      let lateResult;
+      win.eval("destinationUI").configurePreparation(() => new Promise((resolve) => { lateResult = resolve; }));
+      const nativePanelTimeout = win.setTimeout.bind(win);
+      win.setTimeout = (fn, ms) => nativePanelTimeout(fn, ms === 150000 ? 25 : ms);
+      doc.getElementById("sendCapture").click();
+      await wait(5);
+      assert(doc.querySelector(".destination-feedback.preparing"), "pending preparation shows Adding");
+      await wait(60);
+      assert(!doc.querySelector(".destination-feedback.preparing") && doc.querySelector(".destination-feedback.review"), "stalled provider exits Adding with Needs review");
+      assert(doc.getElementById("destination-15").disabled && !doc.getElementById("refreshDestinations").disabled && !doc.getElementById("sendCapture").textContent.includes("Adding"), "timeout releases panel busy state while preventing duplicate preparation");
+      lateResult({ prepared: true }); await wait(20);
+      assert(doc.querySelector(".destination-feedback.review"), "late completion cannot overwrite the review result");
+      await refresh();
+      assert(doc.getElementById("destination-15").disabled, "refresh preserves duplicate protection after timeout");
+      win.setTimeout = nativePanelTimeout;
+      chats.pop();
       frame.remove();
       // A toolbar click pins the source before the panel opens; the pin must win over the
       // tab that happens to be active when the panel document loads.

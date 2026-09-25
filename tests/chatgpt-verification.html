@@ -1,71 +1,10 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>ChatGPT composer preparation regression tests</title>
+<title>Attachment-only preparation regression fixture</title>
 <div id="fixture"></div>
 <pre id="result" hidden>RUNNING</pre>
+<script src="../capture-preparation.js"></script>
 <script src="../chatgpt-adapter.js"></script>
-<script>
-  (async () => {
-    // Accelerated fixture clock; production deadlines remain unchanged.
-    const nativeNow = Date.now.bind(Date), nativeTimeout = setTimeout.bind(window);
-    Date.now = () => nativeNow() * 100;
-    window.setTimeout = (fn, ms) => nativeTimeout(fn, Math.max(1, ms / 100));
-    const checks = [];
-    const assert = (condition, label) => { if (!condition) throw new Error(label); checks.push(label); };
-    const fixture = document.getElementById("fixture");
-    // Preparation must never submit: no key event and no send-control click.
-    const keyEvents = [];
-    const nativeDispatch = EventTarget.prototype.dispatchEvent;
-    EventTarget.prototype.dispatchEvent = function (event) {
-      if (/^key(down|press|up)$/.test(event.type)) keyEvents.push(event.type + ":" + event.key);
-      return nativeDispatch.call(this, event);
-    };
-    async function run(mode) {
-      fixture.innerHTML = `<form><div id="prompt-textarea" contenteditable="true" style="min-height:40px"></div>
-      <input type="file" multiple><div id="attachments"></div><button data-testid="send-button" type="button">Send</button></form>`;
-      const payload = {
-        expectedUrl: `${location.origin}${location.pathname}${location.search}`, deliveryId: mode,
-        screenshot: "data:image/png;base64,aGVsbG8=", text: "Unchanged extracted text",
-        prompt: `Captured page context [${mode}]\nPage title\nSee attachments.`, png: `${mode}.png`, txt: `${mode}.txt`
-      };
-      let clicks = 0;
-      const editor = () => document.getElementById("prompt-textarea");
-      const attachments = document.getElementById("attachments");
-      const chips = (names) => {
-        attachments.replaceChildren();
-        for (const name of names) {
-          const chip = document.createElement("span"); chip.textContent = name; chip.title = name; attachments.append(chip);
-        }
-      };
-      document.querySelector('[data-testid="send-button"]').addEventListener("click", () => { clicks++; });
-      document.querySelector('input[type="file"]').addEventListener("change", () => {
-        if (mode === "missing-file") { chips([payload.png]); return; }
-        if (mode === "delayed-files") { setTimeout(() => chips([payload.png, payload.txt]), 700); return; }
-        chips([payload.png, payload.txt]);
-        if (mode === "sync-replacement") editor().replaceWith(editor().cloneNode(true));
-        setTimeout(() => {
-          if (mode === "replacement") editor().replaceWith(editor().cloneNode(true));
-          if (mode === "formatting") editor().textContent = payload.prompt.replaceAll(" ", "\u00a0").replaceAll("\n", "\n\n") + "\u200b";
-          if (mode === "site-clears-draft") editor().textContent = "";
-          if (mode === "site-rewrites-draft") editor().textContent = "Something else";
-        }, 0);
-      });
-      const result = await prepareCaptureInComposer(payload);
-      return { result, clicks, draft: editor().innerText, files: document.querySelector('input[type="file"]').files.length };
-    }
-    try {
-      for (const mode of ["prepared-mode", "sync-replacement", "replacement", "formatting", "delayed-files"]) {
-        const { result, clicks, draft, files } = await run(mode);
-        assert(result.prepared && result.needsReview !== true, `${mode}: a prepared composer is reported as added`);
-        assert(clicks === 0, `${mode}: nothing is submitted`);
-        assert(files === 2, `${mode}: both attachments stay in the chat`);
-        assert(draft.includes(`[${mode}]`), `${mode}: the prompt stays in the composer for review`);
-      }
-      const missing = await run("missing-file");
-      assert(!missing.result.prepared && missing.result.needsReview && missing.clicks === 0, "missing-file: an incomplete attachment set needs review and never submits");
-      document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
-    } catch (error) {
-      document.getElementById("result").textContent = "FAIL " + error.message + " " + JSON.stringify(checks);
-    }
-  })();
-</script>
+<script src="../claude-adapter.js"></script>
+<script src="../gemini-adapter.js"></script>
+<script src="attachment-preparation.js"></script>

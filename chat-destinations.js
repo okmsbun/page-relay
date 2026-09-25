@@ -126,12 +126,50 @@ const ChatDestinations = (() => {
 
   // The caller must supply an approved preparation implementation. A resolved
   // promise alone is never treated as proof that the composer holds the capture.
+  const preparationTimeoutMs = 150000;
+  const captures = new WeakMap();
+  const active = new Map();
+  const geminiWindows = new Map();
+  const destinationKey = (destination) => `${!!destination.incognito}:${destination.providerId}:${destination.conversation ? destination.url : destination.id}`;
   async function prepareSelected(destinations, capture, prepare, update) {
-    const results = [];
-    for (const destination of destinations) {
+    let history = captures.get(capture);
+    if (!history) captures.set(capture, history = new Map());
+    async function run(destination) {
+      const key = destinationKey(destination);
+      if (history.has(key)) {
+        const result = await history.get(key);
+        update(destination.id, result);
+        return { id: destination.id, ...result };
+      }
+      const pending = execute(destination, key);
+      history.set(key, pending);
+      const result = await pending;
+      if (!["prepared", "review"].includes(result.state)) history.delete(key);
+      return { id: destination.id, ...result };
+    }
+    async function execute(destination, key) {
       update(destination.id, { state: "preparing", message: "Adding…" });
       let result;
+      let timer;
+      let expired = false;
+      let started = false;
+      let operation;
+      const token = {};
+      let claimed = false;
+      const release = () => {
+        if (active.get(key) === token) active.delete(key);
+        if (geminiWindows.get(destination.windowId) === token) geminiWindows.delete(destination.windowId);
+      };
       try {
+        if (active.has(key) || (destination.providerId === "gemini" && geminiWindows.has(destination.windowId))) {
+          const error = new Error("Another preparation is still running for this conversation or Gemini window. Wait, then retry.");
+          error.busy = true;
+          error.needsReview = false;
+          throw error;
+        }
+        active.set(key, token);
+        if (destination.providerId === "gemini") geminiWindows.set(destination.windowId, token);
+        claimed = true;
         if (!AIProviders.supported(AIProviders.get(destination.providerId))) {
           const error = new Error(
             "No composer-preparation integration is available for this provider.",
@@ -139,8 +177,25 @@ const ChatDestinations = (() => {
           error.unavailable = true;
           throw error;
         }
-        await validate(destination);
-        const prepared = await prepare(destination, capture);
+        const prepared = await Promise.race([
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              expired = true;
+              const error = new Error(started
+                ? "Preparation timed out. Review this chat before adding anything again."
+                : "The chat could not be checked in time. Refresh and retry.");
+              error.needsReview = started;
+              reject(error);
+            }, preparationTimeoutMs);
+          }),
+          operation = (async () => {
+            await validate(destination);
+            // Validation may settle after timeout. Never start a late upload.
+            if (expired) return;
+            started = true;
+            return prepare(destination, capture);
+          })(),
+        ]);
         if (prepared?.prepared !== true) {
           const error = new Error(
             "The capture was not confirmed in this chat. Check it before retrying.",
@@ -164,11 +219,29 @@ const ChatDestinations = (() => {
                   : "failed",
           message: error.message || "Could not add the capture to this chat.",
         };
+      } finally {
+        clearTimeout(timer);
+        // A UI timeout does not cancel an injected script. Keep its reservation
+        // until the actual operation settles, even while other destinations finish.
+        if (claimed) {
+          if (operation) operation.then(release, release);
+          else release();
+        }
       }
-      results.push({ id: destination.id, ...result });
       update(destination.id, result);
+      return result;
     }
-    return results;
+    const results = new Map();
+    async function lane(items) {
+      for (const destination of items) results.set(destination, await run(destination));
+    }
+    await Promise.all([
+      lane(destinations.filter((item) => item.providerId === "chatgpt")),
+      lane(destinations.filter((item) => item.providerId === "claude")),
+    ]);
+    // Gemini activation/restoration is exclusive; retain its provider upload order.
+    await lane(destinations.filter((item) => !["chatgpt", "claude"].includes(item.providerId)));
+    return destinations.map((destination) => results.get(destination));
   }
   return {
     identity,

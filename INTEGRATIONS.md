@@ -72,15 +72,15 @@ symbol fallback; no third-party favicon service or extra permission is used.
 ## Current capability
 
 This extension **prepares** a chat: it attaches the full-page PNG, attaches the
-extracted page text, and inserts the prompt into the composer. It never submits:
+extracted page text with a title/URL header, and preserves existing composer content. It never submits:
 no Send click, no Enter/Return, no generation is started. The user reviews the
 draft and sends it. "Added" therefore means "the capture is in that chat's draft".
 
 | Provider | Recognized chat routes                          | Composer preparation                                                                                                |
 | -------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| ChatGPT  | New chats, `/c/…`, custom GPT conversations     | Enabled; attachment + prompt preparation, draft/attachment protection and uncertainty handling verified by fixtures |
-| Claude   | `/new`, `/chat/…`                               | Enabled; live verified attachment + prompt preparation, draft/attachment protection and preparation confirmation    |
-| Gemini   | `/app`, `/app/…`, account-prefixed `/u/N/app/…` | Enabled; live verified attachment + prompt preparation, upload-menu/consent handling and preparation confirmation   |
+| ChatGPT  | New chats, `/c/…`, custom GPT conversations     | Enabled; attachment-only preparation and existing-content preservation covered by fixtures |
+| Claude   | `/new`, `/chat/…`                               | Enabled; attachment-only preparation and existing-content preservation covered by fixtures    |
+| Gemini   | `/app`, `/app/…`, account-prefixed `/u/N/app/…` | Enabled; attachment-only preparation, upload-menu/consent handling and preservation covered by fixtures   |
 
 These three are the entire registry, and every one of them has a complete,
 verified preparation integration. A provider appears in the panel only when such
@@ -129,70 +129,84 @@ selecting nor refreshing destinations injects a preparation script. Providers
 without an integration cannot bypass the capability check by invoking the queue
 directly.
 
-## ChatGPT preparation
+## Attachment-only preparation
 
-The adapter re-queries the current editor, normalizes presentation whitespace,
-and distinguishes its synchronous insertion from trusted editing events. It
-verifies both attachment names in the composer plus the exact prompt before
-reporting **Added**. It never clicks Send: there is no submission step, no
-outgoing-turn inspection, and no Enter/Return key event anywhere in the code.
+`capture-preparation.js` builds one stable delivery identity and the same TXT bytes
+for each capture, shared by all destinations. The header contains `Page title:`
+and `URL:`, an optional technical-limit truncation note, a separator, then the
+original extracted text. Internal IDs are used in filenames, never TXT content.
+The adapters never focus or edit the message editor and never inspect Send to
+decide whether files are prepared.
 
-Existing drafts and attachments still prevent preparation: the composer is left
-exactly as the user wrote it and the destination reports **Failed** with the
-reason. Real edits during preparation, missing attachment proof, and any
-doubt about the prepared state are **Needs review**, never Added. Review and
-Added rows stay disabled for the current capture, including a refresh after a
-new-chat URL becomes a conversation URL. There is no automatic retry. Panel
-closure interrupts the queue; an already-injected preparation may still finish.
-Keep the panel open and inspect the destination before acting again.
+Before uploading, the injected routine snapshots the editor's exact HTML (or
+textarea value) and existing attachment identities, including image sources.
+Rendered attachments are retained by the provider's normal upload change handler;
+only the new PNG/TXT are assigned to the upload input. Existing files are never
+copied into the new batch. A native selection not yet represented by rendered
+attachments is rejected before replacing that input's selection. Existing upload
+progress is Busy and can be retried manually once finished.
 
-### Busy destinations
+Completion requires one matching new PNG and one matching new TXT, no visible
+upload progress/error, unchanged editor content, and preservation of the original
+attachment set. The expected count is the initial count plus two, not always two.
+Changes by the user or provider during preparation result in Needs review; no
+restoration or automatic retry overwrites user work. A provider that replaces
+existing attachment state instead of appending is detected and reported for review.
+This verification cannot reconstruct files removed internally by a changed provider
+UI; the live append checks below are required for current account/UI variants.
 
-If an adapter detects an ongoing response before changing the composer or
-uploading files, the destination reports **Busy · Generating a response**, not
-Failed. Nothing was added by that attempt. Other selected destinations continue;
-the busy destination stays selected for an explicit Add click once generation
-finishes. Refreshing, waiting, or switching provider tabs never retries it
-automatically. Already added destinations remain disabled.
+ChatGPT uses the current composer form and its upload control, including the
+`data-composer-markdown` editor variant. Claude uses its ChatComposer and file
+thumbnail tiles. Both receive PNG and TXT in one new upload batch.
 
-Busy is a structured pre-mutation result, not a guess based on error wording.
-Real errors remain Failed; uncertainty after the composer was modified remains
-Needs review and cannot be retried in that panel session.
+Gemini receives PNG, waits for its matching preview, then uploads TXT. It may
+rename/re-encode PNG to `<unique-stem>_<suffix>.jpg`; matching accepts that observed
+conversion and verifies a decoded image. Existing files are included in preservation
+checks. Consent is never accepted automatically. Gemini temporarily activates its
+destination tab, restoring the prior tab only if the user has not switched away;
+restoration is best effort with a two-second bound.
 
-## Claude and Gemini preparation verification
+## Scheduling, timeouts and duplicate protection
 
-Both adapters were exercised in separate disposable signed-in chats with a
-synthetic blue-square PNG and a TXT file containing a unique sample marker. No
-real captured page or personal data was used. Each provider received both files
-and held the unique prompt in its composer, which is what the extension now
-reports as **Added**; nothing was submitted for either provider.
+ChatGPT and Claude have concurrent lanes; destinations within a lane remain
+sequential. Gemini starts after both lanes have returned results and runs sequentially.
+Queue results remain in the original selection order; failures are isolated.
 
-Draft protection was verified per provider: a nonempty test draft was reported as
-Failed without changing its text or uploading anything, and an existing
-attachment was left untouched. Only test-created drafts/attachments were cleaned
-up. The successful test conversations were left open for inspection.
+The queue reserves a conversation for the actual operation lifetime, including
+operations that outlive their 150-second UI timeout. Gemini windows are reserved
+as well. Extension-wide Web Locks in the dispatcher prevent other panel documents
+from concurrently preparing the same conversation or activating another Gemini
+chat in the same window. A blocked operation reports retryable Busy instead of
+waiting indefinitely. The injected routine also has a per-tab lock and a deadline.
 
-The live tests executed the injected adapter functions through Apple Events; they
-were not an end-to-end click-through of the packaged panel. Queue dispatch, panel
-selection, editor replacement, upload errors, edits during preparation, and
-incomplete attachment evidence are covered by local automated fixtures, as is
-the rule that no adapter clicks a send control or dispatches a key event. Real
-network-failure injection and every account/locale variant have not been
-live-tested.
+A pre-preparation timeout is Failed; uncertainty after invoking an adapter is
+Needs review. A timed-out injection may still finish, so locks remain until its
+actual promise settles, and late results never overwrite the panel's review state.
 
-Gemini mounts its upload controls reliably only in an active tab. Its integration
-temporarily activates the selected destination within its window, without
-focusing another window, then restores the previous tab if the user has not
-switched tabs meanwhile. Capture and text extraction do not participate in this
-behavior. Its two upload controls receive PNG then TXT; upload consent is never
-accepted by the adapter. Gemini may add a suffix to the PNG filename, so
-preparation matches its upload tiles by filename and its composer by prompt.
-Claude matches both attachment tiles in its composer.
+For the same capture object, the panel remembers completed/review outcomes and
+shares pending attempts. Stable filenames and an isolated-world attempt ledger
+prevent duplicate uploads inside a tab, including a partial failed attempt. Existing
+matching files are checked if that ledger was lost. These are capture-session
+protections, not a permanent cross-session content-hash deduplication service.
+A new capture is a new operation. Added and Needs review rows stay disabled,
+including refresh; Busy/Failed can be retried explicitly.
+
+## Live verification boundary
+
+Earlier live tests verified the former prompt-writing adapters and the observed
+provider selectors, including Gemini's JPEG conversion. They do not establish
+that this new append-only flow preserves existing content on every signed-in UI.
+The current attachment-only/preservation behavior is covered by automated browser
+fixtures; perform the manual checks below after reloading the installed extension.
+No messages are submitted by the automated tests.
 
 ## Testing
 
-Run `node --test tests/*.test.cjs` and `node tests/browser-check.cjs`.
-The latter runs local fixtures with Chrome's headless CLI, not DevTools Protocol.
+Run `node --test tests/*.test.cjs`, `node tests/browser-check.cjs`, and
+`node tests/provider-controls.cjs`.
+Both browser test runners use isolated headless Chrome with DevTools Protocol.
+They wait for actual fixture completion, including async TXT reads; the controls
+check delivers native pointer/keyboard input. Neither opens a visible temporary profile.
 Fixtures prove queue/UI behavior and adapter state transitions; they are not
 authenticated provider end-to-end tests. No real messages are sent by these tests.
 
@@ -214,14 +228,16 @@ authenticated provider end-to-end tests. No real messages are sent by these test
 2. Open disposable ChatGPT, Claude and Gemini conversations, including an empty
    new chat. Open the panel on a nonsensitive source page, let capture finish,
    select those destinations across provider tabs, then click **Add to N chats**.
-   Confirm the PNG plus the unmodified `.txt` attachment are attached in each
-   chat, the prompt is in its composer, and **nothing was submitted**: no new user
+   Confirm only the PNG and TXT were added, the TXT header has the title/URL,
+   the editor stays empty, and **nothing was submitted**: no new user
    turn, no generation. The panel must show **Added**. Test a new chat's URL
    transition as well.
-3. Repeat with an existing draft or an existing attachment in one chat. That chat
-   must remain untouched (same text, same attachments) and report Failed, while
-   the other selected chats are prepared. Then write your own message in a
-   prepared chat and send it manually to confirm the capture is usable.
+3. Repeat for each provider with existing text, existing attachments, and both.
+   Original text and attachments must remain unchanged; only the new PNG/TXT are
+   added and the result is Added. Verify TXT metadata and the unchanged extracted
+   body, then repeat the Add action to check that no duplicate files appear.
+   During another attempt, edit the draft: the result must be Needs review and
+   the edit must remain untouched.
 4. Only ChatGPT, Claude and Gemini may ever appear. Open a DeepSeek and a
    Microsoft Copilot tab and refresh: neither may appear as a provider tab or a
    destination, and no "Discovery only"/"not implemented" text may be shown.
@@ -252,7 +268,8 @@ using a disposable conversation and nonsensitive sample content. Verify:
 - Both the PNG and complete text are accepted together; neither is silently lost.
 - Existing text and attachments are detectable before modifying anything.
 - Upload completion/error indicators are distinguishable from merely selected files.
-- The composer holds the prompt and both attachments while nothing is submitted.
+- The composer text remains unchanged and both new attachments are ready while
+  pre-existing attachments remain present and nothing is submitted.
 - Editor replacement, background tabs, new-chat URL transitions, failed uploads,
   and user edits during preparation cannot produce a duplicate or a hidden submit.
 

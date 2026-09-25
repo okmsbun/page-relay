@@ -1,86 +1,10 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>ChatGPT composer preparation fixture</title>
-<form>
-  <div id="prompt-textarea" contenteditable="true" style="min-height:40px;border:1px solid"></div>
-  <input type="file" multiple accept="image/png,text/plain">
-  <div id="attachments"></div>
-  <button data-testid="send-button" type="button">Send</button>
-</form>
+<title>Attachment-only preparation regression fixture</title>
+<div id="fixture"></div>
 <pre id="result" hidden>RUNNING</pre>
+<script src="../capture-preparation.js"></script>
 <script src="../chatgpt-adapter.js"></script>
-<script>
-  (async () => {
-    const checks = [];
-    const assert = (ok, message) => { if (!ok) throw new Error(message); checks.push(message); };
-    const composer = document.getElementById("prompt-textarea");
-    const input = document.querySelector('input[type="file"]');
-    const attachments = document.getElementById("attachments");
-    let clicks = 0;
-    const keys = [];
-    const nativeDispatch = EventTarget.prototype.dispatchEvent;
-    EventTarget.prototype.dispatchEvent = function (event) {
-      if (/^key(down|press|up)$/.test(event.type)) keys.push(`${event.type}:${event.key}`);
-      return nativeDispatch.call(this, event);
-    };
-    input.addEventListener("change", () => {
-      for (const file of input.files) {
-        const chip = document.createElement("span"); chip.textContent = file.name; chip.title = file.name; attachments.append(chip);
-      }
-    });
-    document.querySelector('[data-testid="send-button"]').addEventListener("click", () => { clicks++; });
-    const payload = {
-      expectedUrl: `${location.origin}${location.pathname}${location.search}`,
-      screenshot: "data:image/png;base64,aGVsbG8=", text: "Page text\nRevenue\nRevenue", prompt: "Captured page context [test-delivery]",
-      png: "page-test.png", txt: "page-test.txt", deliveryId: "test-delivery"
-    };
-    try {
-      const stop = document.createElement("button"); stop.dataset.testid = "stop-button";
-      document.body.append(stop);
-      const busy = await prepareCaptureInComposer(payload);
-      assert(!busy.prepared && busy.busy && busy.needsReview === false && !input.files.length && clicks === 0 && !composer.innerText,
-        "generation is busy with no draft mutation, uploads, or submission");
-      assert(!window.__pageCapturePreparing, "busy detection leaves no preparation lock");
-      stop.remove();
-      composer.textContent = "Existing draft";
-      const draft = await prepareCaptureInComposer(payload);
-      assert(!draft.prepared && !draft.needsReview && composer.innerText === "Existing draft", "existing draft is preserved");
-      assert(!input.files.length && clicks === 0, "draft rejection uploads nothing and never submits");
-      composer.textContent = "";
-      const changed = await prepareCaptureInComposer({ ...payload, expectedUrl: "https://chatgpt.com/c/another" });
-      assert(!changed.prepared && clicks === 0, "changed destination rejected before upload");
-      window.__pageCapturePreparing = "another-delivery";
-      const locked = await prepareCaptureInComposer(payload);
-      assert(!locked.prepared && window.__pageCapturePreparing === "another-delivery" && !input.files.length, "concurrent preparation does not alter another attempt or its lock");
-      delete window.__pageCapturePreparing;
-      input.disabled = true;
-      const unavailable = await prepareCaptureInComposer(payload);
-      assert(!unavailable.prepared && !unavailable.needsReview && clicks === 0, "unavailable upload control fails without modifying the chat");
-      input.disabled = false;
-      const existingAttachment = document.createElement("button");
-      existingAttachment.setAttribute("aria-label", "Remove attachment");
-      attachments.append(existingAttachment);
-      const attached = await prepareCaptureInComposer(payload);
-      assert(!attached.prepared && !input.files.length, "existing attachment is preserved without adding files");
-      existingAttachment.remove();
-      const prepared = await prepareCaptureInComposer(payload);
-      assert(prepared.prepared && clicks === 0, "the composer is prepared and nothing is submitted");
-      assert(composer.innerText === payload.prompt, "the prompt is left in the composer for the user to review");
-      assert(input.files.length === 2 && input.files[0].type === "image/png" && input.files[1].type === "text/plain", "PNG and text attached together");
-      assert(await input.files[1].text() === payload.text, "extracted text transmitted without rewriting");
-      assert(!window.__pageCapturePreparing, "per-tab preparation lock released");
-      input.value = "";
-      attachments.replaceChildren();
-      composer.textContent = "";
-      input.addEventListener("change", () => setTimeout(() => { composer.textContent = "User edited draft"; }, 0), { once: true });
-      const edited = await prepareCaptureInComposer({ ...payload, deliveryId: "edited-delivery", prompt: "Captured page context [edited-delivery]" });
-      assert(!edited.prepared && edited.needsReview && clicks === 0, "draft edited during upload is flagged for review without submitting");
-      assert(composer.innerText === "User edited draft" && input.files.length === 2, "uncertain draft and attachments are left intact for review");
-      assert(keys.length === 0, "no key event is ever synthesized (saw " + keys.join(", ") + ")");
-      assert(clicks === 0, "the site's send control is never clicked");
-      document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
-    } catch (error) {
-      document.getElementById("result").textContent = "FAIL " + error.message + " " + JSON.stringify(checks);
-    }
-  })();
-</script>
+<script src="../claude-adapter.js"></script>
+<script src="../gemini-adapter.js"></script>
+<script src="attachment-preparation.js"></script>

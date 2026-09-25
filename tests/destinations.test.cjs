@@ -6,12 +6,52 @@ const path = require("node:path");
 const root = path.join(__dirname, "..");
 const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
-function harness(chrome = {}) {
-  const context = vm.createContext({ chrome, URL });
+function harness(chrome = {}, timers = { setTimeout, clearTimeout }) {
+  const context = vm.createContext({ chrome, URL, ...timers });
   vm.runInContext(read("ai-providers.js"), context);
   vm.runInContext(read("chat-destinations.js"), context);
   return vm.runInContext("ChatDestinations", context);
 }
+
+for (const [provider, url] of [
+  ["chatgpt", "https://chatgpt.com/c/timeout"],
+  ["claude", "https://claude.ai/chat/timeout"],
+  ["gemini", "https://gemini.google.com/app/timeout"],
+]) {
+  test(`${provider}: a stalled adapter reaches review, continues the queue, and ignores late success`, async () => {
+    let settle;
+    const pending = new Promise((resolve) => { settle = resolve; });
+    const tabs = [tab(1, 10, { url }), tab(2)];
+    const updates = [];
+    const api = harness({ tabs: { get: async (id) => tabs[id - 1] } }, {
+      setTimeout: (fn, ms) => { assert.equal(ms, 150000); return setTimeout(fn, 10); },
+      clearTimeout,
+    });
+    const results = await api.prepareSelected(api.describeTabs(tabs, 10, false), {},
+      async (destination) => destination.id === 1 ? pending : { prepared: true },
+      (id, result) => updates.push([id, result.state]));
+    assert.deepEqual(Array.from(results, (result) => result.state), ["review", "prepared"]);
+    assert.match(results[0].message, /timed out/);
+    settle({ prepared: true });
+    await new Promise(setImmediate);
+    assert.deepEqual(updates.filter(([id]) => id === 1), [[1, "preparing"], [1, "review"]]);
+    assert.deepEqual(updates.filter(([id]) => id === 2), [[2, "preparing"], [2, "prepared"]]);
+  });
+}
+
+test("validation timeout fails without a late upload when validation eventually resolves", async () => {
+  let settle;
+  let uploads = 0;
+  const api = harness({ tabs: { get: () => new Promise((resolve) => { settle = resolve; }) } }, {
+    setTimeout: (fn) => setTimeout(fn, 10), clearTimeout,
+  });
+  const results = await api.prepareSelected(api.describeTabs([tab(1)], 10, false), {},
+    async () => { uploads++; return { prepared: true }; }, () => {});
+  assert.equal(results[0].state, "failed");
+  settle(tab(1));
+  await new Promise(setImmediate);
+  assert.equal(uploads, 0);
+});
 const tab = (id, windowId = 10, extra = {}) => ({
   id,
   windowId,
@@ -310,4 +350,90 @@ test("every listed provider has an adapter that never submits", () => {
   assert.ok(delivery.includes("prepareInChatGPT"));
   assert.ok(delivery.includes("prepareInClaude"));
   assert.ok(delivery.includes("prepareInGemini"));
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+const tick = () => new Promise(setImmediate);
+function providerTabs() {
+  return [tab(1), tab(2, 10, { url: "https://claude.ai/chat/two" }),
+    tab(3, 10, { url: "https://gemini.google.com/app/three" })];
+}
+
+test("ChatGPT and Claude overlap; Gemini starts only after both settle; results retain selection order", async () => {
+  const tabs = providerTabs();
+  const api = harness({ tabs: { get: async (id) => tabs[id - 1] } });
+  const choices = api.describeTabs(tabs, 10, false);
+  const gates = [deferred(), deferred(), deferred()];
+  const calls = [];
+  const capture = { screenshot: "png", text: "unchanged" };
+  const running = api.prepareSelected(choices, capture, (destination, received) => {
+    assert.equal(received, capture);
+    calls.push(destination.providerId);
+    return gates[destination.id - 1].promise;
+  }, () => {});
+  await tick();
+  assert.deepEqual(calls, ["chatgpt", "claude"]);
+  gates[0].reject(new Error("ChatGPT upload failed"));
+  await tick();
+  assert.deepEqual(calls, ["chatgpt", "claude"]);
+  gates[1].resolve({ prepared: true });
+  await tick();
+  assert.deepEqual(calls, ["chatgpt", "claude", "gemini"]);
+  gates[2].resolve({ prepared: true });
+  const results = await running;
+  assert.deepEqual(Array.from(results, (result) => [result.id, result.state]), [[1, "failed"], [2, "prepared"], [3, "prepared"]]);
+});
+
+test("repeated concurrent actions and duplicate tab copies prepare a capture only once", async () => {
+  const api = harness({ tabs: { get: async (id) => tab(id, 10, { url: "https://chatgpt.com/c/same" }) } });
+  const [destination] = api.describeTabs([tab(1, 10, { url: "https://chatgpt.com/c/same" })], 10, false);
+  const capture = {};
+  const gate = deferred(); let uploads = 0;
+  const prepare = () => { uploads++; return gate.promise; };
+  const first = api.prepareSelected([destination], capture, prepare, () => {});
+  const second = api.prepareSelected([{ ...destination, id: 2 }], capture, prepare, () => {});
+  await tick();
+  assert.equal(uploads, 1);
+  gate.resolve({ prepared: true });
+  await Promise.all([first, second]);
+  const repeated = await api.prepareSelected([destination], capture, prepare, () => {});
+  assert.equal(repeated[0].state, "prepared");
+  assert.equal(uploads, 1);
+});
+
+test("another capture cannot mutate a conversation still running after timeout", async () => {
+  const api = harness({ tabs: { get: async () => tab(1) } }, {
+    setTimeout: (fn) => setTimeout(fn, 10), clearTimeout,
+  });
+  const choices = api.describeTabs([tab(1)], 10, false);
+  const gate = deferred(); let uploads = 0;
+  const prepare = () => { uploads++; return gate.promise; };
+  const capture = {};
+  assert.equal((await api.prepareSelected(choices, capture, prepare, () => {}))[0].state, "review");
+  assert.equal((await api.prepareSelected(choices, capture, prepare, () => {}))[0].state, "review");
+  assert.equal((await api.prepareSelected(choices, {}, prepare, () => {}))[0].state, "busy");
+  assert.equal(uploads, 1);
+  gate.resolve({ prepared: true }); await tick();
+  assert.equal((await api.prepareSelected(choices, {}, prepare, () => {}))[0].state, "prepared");
+  assert.equal(uploads, 2);
+});
+
+test("Gemini window remains reserved after timeout until actual activation operation ends", async () => {
+  const tabs = [tab(1, 10, { url: "https://gemini.google.com/app/one" }), tab(2, 10, { url: "https://gemini.google.com/app/two" })];
+  const api = harness({ tabs: { get: async (id) => tabs[id - 1] } }, {
+    setTimeout: (fn) => setTimeout(fn, 10), clearTimeout,
+  });
+  const choices = api.describeTabs(tabs, 10, false);
+  const gate = deferred(); const calls = [];
+  const prepare = (destination) => { calls.push(destination.id); return gate.promise; };
+  const results = await api.prepareSelected(choices, {}, prepare, () => {});
+  assert.deepEqual(Array.from(results, (result) => result.state), ["review", "busy"]);
+  assert.deepEqual(calls, [1]);
+  gate.resolve({ prepared: true }); await tick();
+  assert.equal((await api.prepareSelected([choices[1]], {}, prepare, () => {}))[0].state, "prepared");
+  assert.deepEqual(calls, [1, 2]);
 });

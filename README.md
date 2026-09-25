@@ -16,7 +16,8 @@ submit it yourself.
   position is restored, and the screenshot keeps the correct
   devicePixelRatio/Retina resolution.
 - Prepares that context in a supported AI chat: the PNG, a `.txt` file with the
-  extracted text, and a short prompt are placed in that chat's composer.
+  extracted text and a title/URL header. Existing draft text and attachments stay
+  in place; PageRelay never writes text into the message editor.
 - Runs in Chrome's native Side Panel: one panel session per capture, and
   switching tabs afterwards does not replace the captured source.
 
@@ -55,11 +56,18 @@ without a verified integration are not listed at all; there are no
 3. Click **Refresh** to list the AI conversations open in your browser, and
    select one or more of them.
 4. Click **Add to N chats**. PageRelay attaches the PNG and the extracted text
-   and inserts the prompt into each selected chat's composer.
+   alongside existing attachments, preserving any draft text.
 5. Review each prepared chat and press Send there yourself.
 
-Existing drafts and attachments are never overwritten: if a chat already has
-unsent text or an attachment, PageRelay reports it as Failed and changes nothing.
+Existing drafts and attachments are preserved. The TXT starts with the page title
+and source URL, plus a truncation note if extraction reached a technical limit;
+the extracted text below that header is unchanged. No delivery ID is put in its contents.
+
+ChatGPT and Claude prepare concurrently, with destinations within each provider
+processed in order. Gemini runs afterward with coordinated tab activation.
+Repeated actions for the same capture cannot duplicate a completed or uncertain
+preparation. If preservation or upload completion cannot be confirmed, inspect
+the Needs review result before doing anything else.
 
 ## Privacy
 
@@ -76,6 +84,7 @@ JavaScript loaded unpacked from this directory.
 ```bash
 node --test tests/*.test.cjs   # unit and integration tests
 node tests/browser-check.cjs   # browser fixtures in headless Chrome
+node tests/provider-controls.cjs # native pointer/keyboard checks in headless Chrome
 ```
 
 `tests/sidepanel-e2e.cjs` is an optional, isolated end-to-end check that loads the

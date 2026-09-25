@@ -13,6 +13,7 @@ for (const [provider, functionName] of [
   test(`${provider} propagates only explicit pre-mutation busy results as retryable`, async () => {
     let result;
     const context = vm.createContext({
+      setTimeout, clearTimeout,
       crypto: { randomUUID: () => "test-id" },
       ChatDestinations: { validate: async () => {} },
       chrome: {
@@ -20,6 +21,7 @@ for (const [provider, functionName] of [
         scripting: { executeScript: async () => [{ result }] },
       },
     });
+    vm.runInContext(fs.readFileSync(path.join(root, "capture-preparation.js"), "utf8"), context);
     vm.runInContext(
       fs.readFileSync(path.join(root, `${provider}-adapter.js`), "utf8"),
       context,
@@ -56,7 +58,7 @@ for (const [provider, functionName] of [
       (error) => !error.busy && !error.needsReview,
     );
     result = { prepared: true };
-    assert.deepEqual(await prepare({ id: 1 }, {}), { prepared: true });
+    assert.equal((await prepare({ id: 1 }, {})).prepared, true);
   });
 }
 
@@ -65,6 +67,7 @@ function geminiHarness({
   injectError,
   switchDuringPreparation = false,
   activationError = false,
+  stalledRestore = false,
 } = {}) {
   let activeId = 1;
   const calls = [];
@@ -75,11 +78,12 @@ function geminiHarness({
     providerId: "gemini",
   };
   const context = vm.createContext({
+    setTimeout: (fn, ms) => setTimeout(fn, stalledRestore ? 10 : ms), clearTimeout,
     crypto: { randomUUID: () => "unique-test-id" },
     ChatDestinations: { validate: async () => {} },
     chrome: {
       tabs: {
-        query: async () => [{ id: activeId }],
+        query: async () => stalledRestore && activeId === 2 ? new Promise(() => {}) : [{ id: activeId }],
         update: async (id, options) => {
           if (activationError) throw new Error("Tab closed");
           assert.equal(options.active, true);
@@ -90,7 +94,7 @@ function geminiHarness({
       scripting: {
         executeScript: async (options) => {
           assert.equal(options.target.tabId, 2);
-          assert.equal(options.args[0].text, "full text");
+          assert.equal(options.args[0].text, "Page title: Untitled page\nURL: \n\n---\n\nfull text");
           assert.equal(
             options.args[0].screenshot,
             "data:image/png;base64,test",
@@ -102,6 +106,7 @@ function geminiHarness({
       },
     },
   });
+  vm.runInContext(fs.readFileSync(path.join(root, "capture-preparation.js"), "utf8"), context);
   vm.runInContext(
     fs.readFileSync(path.join(root, "gemini-adapter.js"), "utf8"),
     context,
@@ -121,6 +126,11 @@ test("Gemini activates only the selected tab then restores the previous tab afte
   const fixture = geminiHarness();
   assert.equal((await fixture.run()).prepared, true);
   assert.deepEqual(fixture.calls, [2, 1]);
+});
+test("Gemini returns confirmed preparation even if tab restoration never resolves", async () => {
+  const fixture = geminiHarness({ stalledRestore: true });
+  assert.equal((await fixture.run()).prepared, true);
+  assert.deepEqual(fixture.calls, [2]);
 });
 test("Gemini restores activation after a protected draft rejection without marking it uncertain", async () => {
   const fixture = geminiHarness({
@@ -155,6 +165,7 @@ test("enabled provider dispatch and Side Panel scripts agree; unsupported provid
   const calls = [];
   const context = vm.createContext({
     URL,
+    navigator: { locks: { request: async (_name, _options, action) => action({}) } },
     prepareInChatGPT: async () => {
       calls.push("chatgpt");
       return { prepared: true };
@@ -199,6 +210,7 @@ test("enabled provider dispatch and Side Panel scripts agree; unsupported provid
 
 test("no adapter can submit: no send click, no key events, no submit API", () => {
   for (const file of [
+    "capture-preparation.js",
     "chatgpt-adapter.js",
     "claude-adapter.js",
     "gemini-adapter.js",
@@ -215,4 +227,76 @@ test("no adapter can submit: no send click, no key events, no submit API", () =>
   const panel = fs.readFileSync(path.join(root, "sidepanel.html"), "utf8");
   assert.match(panel, /Add to chat/);
   assert.doesNotMatch(panel, /Send to</);
+});
+
+test("all adapters inject identical metadata TXT bytes and stable filenames for one capture, never a prompt", async () => {
+  let serial = 0;
+  const received = [];
+  const context = vm.createContext({
+    Date, setTimeout, clearTimeout,
+    crypto: { randomUUID: () => `capture-${++serial}` },
+    ChatDestinations: { validate: async () => {} },
+    chrome: { tabs: { query: async () => [{ id: 1 }], update: async () => {} },
+      scripting: { executeScript: async ({ func, args }) => {
+        assert.equal(func.name, "prepareFilesInComposer");
+        received.push(args[0]); return [{ result: { prepared: true } }];
+      } } },
+  });
+  for (const name of ["capture-preparation", "chatgpt-adapter", "claude-adapter", "gemini-adapter"])
+    vm.runInContext(fs.readFileSync(path.join(root, name + ".js"), "utf8"), context);
+  const capture = { title: "Source title", url: "https://example.com/source", screenshot: "data:image/png;base64,test", text: "Original\n\n  whitespace\n", truncated: true };
+  for (const name of ["prepareInChatGPT", "prepareInClaude", "prepareInGemini", "prepareInChatGPT"])
+    await vm.runInContext(name, context)({ id: 1, url: "destination" }, capture);
+  assert.equal(serial, 1);
+  for (const payload of received) {
+    assert.equal(payload.text, "Page title: Source title\nURL: https://example.com/source\nNote: Extracted page text was truncated because it reached a technical capture limit.\n\n---\n\n" + capture.text);
+    assert.equal(payload.png, received[0].png);
+    assert.equal(payload.txt, received[0].txt);
+    assert.equal(payload.screenshot, capture.screenshot);
+    assert.equal(payload.prompt, undefined);
+    assert.ok(!payload.text.includes(payload.deliveryId));
+  }
+  await vm.runInContext("prepareInChatGPT", context)({ id: 1 }, { ...capture, truncated: false });
+  assert.equal(serial, 2);
+  assert.doesNotMatch(received.at(-1).text, /truncated/);
+});
+
+test("shared injected routine contains no editor mutations, focus changes, submission or key simulation", () => {
+  const source = fs.readFileSync(path.join(root, "capture-preparation.js"), "utf8");
+  assert.doesNotMatch(source, /execCommand|\.focus\(|requestSubmit|\.submit\(|KeyboardEvent|\.innerHTML\s*=|\.textContent\s*=|\.value\s*=/);
+  assert.doesNotMatch(source, /payload\.prompt|send\.click\(/);
+});
+
+test("extension-wide locks prevent competing panel operations on a conversation and Gemini window", async () => {
+  const held = new Set();
+  const locks = { request: async (name, options, action) => {
+    assert.equal(options.ifAvailable, true);
+    if (held.has(name)) return action(null);
+    held.add(name);
+    try { return await action({ name }); } finally { held.delete(name); }
+  } };
+  let finish;
+  const pending = new Promise((resolve) => { finish = resolve; });
+  const calls = [];
+  function panel() {
+    const context = vm.createContext({ URL, navigator: { locks },
+      prepareInChatGPT: async (destination) => { calls.push(destination.id); return pending; },
+      prepareInClaude: async () => ({ prepared: true }),
+      prepareInGemini: async (destination) => { calls.push(destination.id); return pending; },
+    });
+    for (const file of ["ai-providers.js", "provider-delivery.js"])
+      vm.runInContext(fs.readFileSync(path.join(root, file), "utf8"), context);
+    return vm.runInContext("prepareInDestination", context);
+  }
+  const firstPanel = panel(), secondPanel = panel();
+  const chat = { id: 1, url: "https://chatgpt.com/c/same", providerId: "chatgpt", windowId: 1 };
+  const first = firstPanel(chat, {});
+  await assert.rejects(secondPanel({ ...chat, id: 2, windowId: 2 }, {}), (error) => error.busy && error.needsReview === false);
+  const gemini = { id: 3, url: "https://gemini.google.com/app/one", providerId: "gemini", windowId: 1 };
+  const third = firstPanel(gemini, {});
+  await assert.rejects(secondPanel({ ...gemini, id: 4, url: "https://gemini.google.com/app/two" }, {}), (error) => error.busy && !error.needsReview);
+  assert.deepEqual(calls, [1, 3]);
+  finish({ prepared: true });
+  await Promise.all([first, third]);
+  assert.equal(held.size, 0);
 });

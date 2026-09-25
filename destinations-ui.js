@@ -97,7 +97,9 @@ const destinationUI = (() => {
           const labels = {
             prepared: "Added",
             preparing: "Adding…",
-            busy: "Busy · Generating a response",
+            busy: status?.message?.startsWith("Generating a response")
+              ? "Busy · Generating a response"
+              : "Busy",
             failed: "Failed",
             review: "Needs review",
             unsupported: "Unsupported",
@@ -117,6 +119,12 @@ const destinationUI = (() => {
           description.append(feedback);
         }
         row.append(checkbox, description);
+        // The whole visible row selects the chat. Preserve native label/checkbox
+        // activation and let expandable feedback remain independently interactive.
+        row.addEventListener("click", (event) => {
+          if (event.target.closest("input, label, details, button, a")) return;
+          if (!checkbox.disabled) checkbox.click();
+        });
         list.append(row);
       }
     }

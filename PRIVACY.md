@@ -10,9 +10,9 @@ This document describes what the code actually does.
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | The pixels of the active tab (via `chrome.tabs.captureVisibleTab`)              | To build the full-page screenshot you asked for.                                                                               |
 | The rendered text of that page (via an injected script reading the DOM)         | To produce the extracted page text, including rows that only appear while scrolling.                                           |
-| The page's title and URL                                                        | They label the capture and are written into the prompt you see in the chat draft.                                              |
+| The page's title and URL                                                        | They label the capture and are written into the TXT attachment header.                                              |
 | The id, window, index, title, URL and Chrome-provided favicon of your open tabs | To list which AI conversations are open (including background tabs and other windows), and to identify the capture source tab. |
-| The chosen chat's composer, upload controls and draft state                     | To attach the files and insert the prompt, and to detect an existing draft/attachment so it is never overwritten.              |
+| The chosen chat's composer, upload controls and draft state                     | To add only the new files and verify existing draft text and attachments remain unchanged.              |
 
 ## Where the data is processed
 
@@ -35,12 +35,13 @@ Only when you explicitly click **Add to N chats**, and only for the conversation
 you selected:
 
 - PageRelay places the PNG screenshot, a `.txt` file with the extracted page
-  text, and a short prompt into that chat's composer, through the signed-in page
+  text and metadata header into that chat's composer, through the signed-in page
   you already have open. This is the same mechanism as attaching files yourself.
 - The receiving service (OpenAI, Anthropic or Google) then handles that content
   under its own privacy policy, exactly as it would for any file you attach.
 - PageRelay does not submit anything. The message is sent only when _you_ press
-  Send in that chat, so nothing is transmitted without your final action.
+  Send in that chat. File contents can already be uploaded to the provider during
+  preparation, before you send the message.
 
 If you never select a destination, the captured screenshot and text never leave
 your browser and are discarded when the panel closes.
@@ -50,6 +51,8 @@ your browser and are discarded when the panel closes.
 - Captured screenshots, extracted text, selections and preparation results live
   in the side panel document's memory. Closing the panel, or restarting the
   browser, discards them.
+- Each destination tab retains operation IDs/results in isolated-world memory to
+  prevent repeated or partial uploads; these disappear when that document unloads.
 - `chrome.storage.session` is used for one small record: the id, window id and
   URL of the tab you clicked the PageRelay icon on, plus a timestamp, so the panel
   knows which page to capture. This is session-only storage; it is not written to
