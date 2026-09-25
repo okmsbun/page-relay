@@ -283,28 +283,23 @@ test("a busy chat is reported as retryable and a definite refusal as failed", as
   assert.match(refused[0].message, /unsent draft/);
 });
 
-test("manifest grants source and provider hosts, and declares only preparation providers", () => {
+test("manifest grants activeTab source access and only supported provider hosts", () => {
   const manifest = JSON.parse(read("manifest.json"));
   const context = vm.createContext({ URL });
   vm.runInContext(read("ai-providers.js"), context);
   const patterns = vm.runInContext("AIProviders.patterns", context);
-  // The Side Panel cannot borrow activeTab from the toolbar click, so the source page
-  // needs declared host access; that grant also covers every provider destination.
-  assert.ok(manifest.host_permissions.includes("<all_urls>"));
-  for (const pattern of patterns) {
-    const origin = new URL(pattern.replace(/\*$/, "")).origin;
-    assert.ok(
-      manifest.host_permissions.includes(pattern) ||
-        manifest.host_permissions.includes("<all_urls>"),
-      `${origin} must be reachable for preparation`,
-    );
-  }
+  // The toolbar click grants temporary access to the source; only supported
+  // providers need persistent host access for background preparation.
+  assert.deepEqual(manifest.host_permissions, Array.from(patterns));
+  assert.ok(!manifest.host_permissions.includes("<all_urls>"));
   assert.deepEqual(manifest.permissions, [
+    "activeTab",
     "scripting",
     "sidePanel",
     "storage",
     "tabs",
   ]);
+  assert.equal(manifest.version, "0.1.1");
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.side_panel.default_path, "sidepanel.html");
   assert.equal(manifest.action.default_popup, undefined);

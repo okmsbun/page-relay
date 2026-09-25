@@ -13,16 +13,17 @@ and removes `action.default_popup`. The service worker opens the panel from
 create per-tab panels or capture data. This uses Chrome's
 [global Side Panel API](https://developer.chrome.com/docs/extensions/reference/api/sidePanel).
 
-Host access is declared for the capturable web (`<all_urls>`): a Side Panel
-cannot borrow `activeTab` from the toolbar click, because
-`sidePanel.setPanelBehavior({ openPanelOnActionClick: true })` consumes that
-click - no action event and no user gesture reaches the extension, and the
-automatic capture on a normal HTTPS page fails. The panel is therefore opened
-from `chrome.action.onClicked`, which also hands the extension the tab the user
-was on. `tabs` identifies that source tab and classifies protected pages;
-`activeTab` is not declared because it adds nothing once `<all_urls>` is granted.
+Clicking the toolbar icon grants `activeTab` access to the source page. The
+panel is opened from `chrome.action.onClicked`, which also hands the extension
+the tab the user was on. `sidePanel.setPanelBehavior({ openPanelOnActionClick:
+true })` would consume that click without delivering the action event needed
+to pin the source tab. `tabs` identifies that tab and classifies protected pages.
+Persistent host access is limited to the supported AI providers so preparation
+can reach their open background tabs.
 
 Open the panel using the extension toolbar icon to start one automatic capture.
+Opening it from Chrome's Side Panel menu does not grant `activeTab` access to an
+arbitrary source page.
 `service-worker.js` pins that clicked tab in `chrome.storage.session`, and
 `sidepanel-session.js` resolves the source exactly once when the panel document
 opens: the pinned tab when the click is recent, otherwise the active tab of the
@@ -39,13 +40,14 @@ restarts. There are no recapture buttons.
 
 ### Permissions
 
-| Permission               | Why PageRelay needs it                                                                                                                                                               |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `scripting`              | Injects `page-text.js` and `content.js` into the captured tab to scroll it, measure it and extract its rendered text.                                                                |
-| `sidePanel`              | Hosts the PageRelay UI in Chrome's side panel.                                                                                                                                       |
-| `storage`                | Keeps the pinned capture source tab in `chrome.storage.session` between the toolbar click and the panel loading. Session storage only; the extension writes nothing to disk.         |
-| `tabs`                   | Reads the clicked tab's id/url to pin the capture source, to list AI conversations across windows, and to tell a real protected page from a lookup failure.                          |
-| `<all_urls>` host access | The capture engine must scroll and screenshot whatever page the user is on, and preparation must script the chosen AI chat. This is the only way a side panel can reach those pages. |
+| Permission | Why PageRelay needs it |
+| ---------- | ---------------------- |
+| `activeTab` | Grants temporary access to the source page after the toolbar click. |
+| `scripting` | Injects `page-text.js` and `content.js` into the captured tab to scroll it, measure it and extract its rendered text. |
+| `sidePanel` | Hosts the PageRelay UI in Chrome's side panel. |
+| `storage` | Keeps the pinned capture source tab in `chrome.storage.session` between the toolbar click and the panel loading. Session storage only; the extension writes nothing to disk. |
+| `tabs` | Reads the clicked tab's id/url to pin the capture source, to list AI conversations across windows, and to tell a real protected page from a lookup failure. |
+| ChatGPT, Claude and Gemini host access | Lets preparation script the supported AI chats, including open background tabs. |
 
 No debugger, cookie, clipboard, download, or webRequest access is requested.
 No analytics, remote endpoints, or PageRelay servers exist.
@@ -90,9 +92,9 @@ protection and confirmation were unverified), so they were removed completely -
 registry, panel UI, discovery, provider scripts, host patterns, icons and
 documentation. Nothing is shown as "Discovery only".
 
-Host access is declared for the capturable web (`<all_urls>`), because a Side
-Panel cannot borrow `activeTab` from the toolbar click. `tabs` is used to identify
-the source tab and to classify protected pages.
+The toolbar click grants temporary `activeTab` access to the source page.
+Explicit provider hosts allow preparation in open background chats. `tabs` is
+used to identify the source tab and classify protected pages.
 
 Provider tabs are derived from the latest matching open conversations, never
 from the whole registry. Refresh adds new providers, removes closed providers,
@@ -116,9 +118,10 @@ read-only pages, and sign-in pages are excluded. New routes require verification
 before adding them. No provider without a verified preparation integration is
 listed, and none has a guessed adapter.
 
-Host access is declared as `<all_urls>` so the panel can prepare the capture in
-any accessible provider chat, and `tabs` is used to name the source tab and to
-classify protected pages. There is no debugger, clipboard, or cookie permission.
+Host access is limited to ChatGPT, Claude and Gemini so the panel can prepare
+the capture in their open chats. `activeTab` grants source-page access after
+the toolbar click, and `tabs` names the source tab and classifies protected
+pages. There is no debugger, clipboard, or cookie permission.
 Incognito destinations require Chrome's **Allow in Incognito** setting and are
 explicitly labelled.
 
@@ -211,8 +214,9 @@ Fixtures prove queue/UI behavior and adapter state transitions; they are not
 authenticated provider end-to-end tests. No real messages are sent by these tests.
 
 1. Reload **PageRelay** at `chrome://extensions`; review the Side Panel
-   permissions (`scripting`, `sidePanel`, `storage`, `tabs`), host
-   access (`<all_urls>`) and the final extension icon. Pin the extension, then
+   permissions (`activeTab`, `scripting`, `sidePanel`, `storage`, `tabs`), host
+   access (ChatGPT, Claude and Gemini only) and the final extension icon. Pin
+   the extension, then
    check capture-source handling on real pages:
    - a normal HTTPS page (for example GitHub) → toolbar icon → the panel must
      capture the page, not report a protected page;

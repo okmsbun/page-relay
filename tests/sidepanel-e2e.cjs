@@ -9,8 +9,8 @@
 // Chrome, clicks the extension action through Chrome's own action pipeline (CDP
 // Extensions.triggerAction, a genuine toolbar click), keeps Chrome's native Side Panel
 // open and reads the real panel document. It covers the regression that unit fixtures
-// cannot see: a Side Panel cannot borrow activeTab from the toolbar click, so the source
-// page needs declared host access.
+// cannot see: the toolbar click must grant activeTab access to the source page,
+// and the Side Panel must be able to use that grant for capture.
 //
 // It opens a visible Chrome window while it runs; run it only when that is acceptable.
 //
@@ -207,12 +207,13 @@ async function main() {
     })();
     const manifest = await cdp.evaluate(sw, "chrome.runtime.getManifest()");
     check(
-      manifest.host_permissions.includes("<all_urls>"),
-      "capture sources have declared host access",
-      JSON.stringify(manifest.host_permissions),
+      manifest.permissions.includes("activeTab") &&
+        !manifest.host_permissions.includes("<all_urls>"),
+      "capture sources use the toolbar click's activeTab grant",
+      JSON.stringify({ permissions: manifest.permissions, hosts: manifest.host_permissions }),
     );
     check(
-      ["scripting", "sidePanel", "storage", "tabs"].every((p) =>
+      ["activeTab", "scripting", "sidePanel", "storage", "tabs"].every((p) =>
         manifest.permissions.includes(p),
       ),
       "MV3 permissions present",

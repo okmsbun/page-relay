@@ -64,13 +64,14 @@ your browser and are discarded when the panel closes.
 
 ## Permissions and why they are required
 
-| Permission               | Reason                                                                                                                                                                                        |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scripting`              | Inject the capture/text scripts into the tab being captured.                                                                                                                                  |
-| `sidePanel`              | Show the PageRelay interface in Chrome's side panel.                                                                                                                                          |
-| `storage`                | Keep the pinned capture source tab in session storage between the toolbar click and the panel loading.                                                                                        |
-| `tabs`                   | Identify the capture source tab and list open AI conversations across windows; also distinguishes a genuinely protected page from a failed lookup.                                            |
-| `<all_urls>` host access | The capture engine must scroll and screenshot whatever page you are on, and preparation must script the AI chat you select. A side panel cannot get this access from the toolbar click alone. |
+| Permission | Reason |
+| ---------- | ------ |
+| `activeTab` | Temporarily access the source webpage when you click the PageRelay toolbar icon. |
+| `scripting` | Inject the capture/text scripts into the tab being captured. |
+| `sidePanel` | Show the PageRelay interface in Chrome's side panel. |
+| `storage` | Keep the pinned capture source tab in session storage between the toolbar click and the panel loading. |
+| `tabs` | Identify the capture source tab and list open AI conversations across windows; also distinguish a genuinely protected page from a failed lookup. |
+| ChatGPT, Claude and Gemini host access | Prepare the PNG and TXT in only the supported AI chats you select, including open background tabs. |
 
 ## Not done by PageRelay
 

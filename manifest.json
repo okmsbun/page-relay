@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "PageRelay",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "minimum_chrome_version": "116",
     "description": "Capture a full-page screenshot and rendered page text, then prepare that context in a supported AI chat.",
     "action": {
@@ -26,9 +26,13 @@
         "service_worker": "service-worker.js"
     },
     "host_permissions": [
-        "<all_urls>"
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://claude.ai/*",
+        "https://gemini.google.com/*"
     ],
     "permissions": [
+        "activeTab",
         "scripting",
         "sidePanel",
         "storage",
