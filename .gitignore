@@ -31,3 +31,7 @@ chrome-profile/
 *.crx
 *.pem
 *.zip
+
+# Release artifacts
+release/
+pagerelay-*.zip
