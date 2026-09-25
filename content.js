@@ -14,15 +14,10 @@
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   function documentHeight() {
-    const root = document.documentElement;
-    const body = document.body;
-    return Math.max(
-      root.scrollHeight,
-      root.offsetHeight,
-      root.clientHeight,
-      body?.scrollHeight ?? 0,
-      body?.offsetHeight ?? 0,
-    );
+    // Body overflow is not necessarily the viewport's scroll range (Wikipedia can
+    // report a body one CSS pixel taller than the actual scrolling element).
+    const scroller = document.scrollingElement || document.documentElement;
+    return Math.max(innerHeight, scroller.scrollHeight);
   }
 
   function clientRect(element) {
@@ -159,6 +154,7 @@
       viewportWidth: target ? target.clientWidth : innerWidth,
       windowHeight: innerHeight,
       windowWidth: innerWidth,
+      devicePixelRatio: window.devicePixelRatio || 1,
       crop,
       scrollX: target ? target.scrollLeft : window.scrollX,
       scrollY: target ? target.scrollTop : window.scrollY,

@@ -38,6 +38,8 @@ function harness({
   crop = { x: 0, y: 0, width: 100, height: viewport },
   windowHeight = viewport,
   regions,
+  scrollLimit,
+  scrollQuantum = 0,
   onMessage,
   onCapture,
 } = {}) {
@@ -57,6 +59,7 @@ function harness({
     viewportWidth: crop.width,
     windowHeight,
     windowWidth: 100,
+    devicePixelRatio: scale,
     crop,
     scrollX: 0,
     scrollY: state.y,
@@ -93,7 +96,7 @@ function harness({
           getContext: () => ({
             drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh) {
               if (image.rows) {
-                canvas.rows = image.rows.slice();
+                canvas.rows = image.rows.slice(0, canvas.height);
                 return;
               }
               assert.equal(
@@ -152,9 +155,12 @@ function harness({
             state.y = 0;
           }
           if (message.type === "fullPageCapture:scroll") {
+            const requested = scrollQuantum
+              ? Math.round(message.scrollY / scrollQuantum) * scrollQuantum
+              : message.scrollY;
             state.y = Math.max(
               0,
-              Math.min(message.scrollY, state.height - viewport),
+              Math.min(requested, scrollLimit ?? state.height - viewport),
             );
             state.events.push({
               type: "scroll",
@@ -302,6 +308,51 @@ test("a stuck scroller fails without returning a partial screenshot", async () =
   );
   assert.equal(state.captures.length, 2);
   assert.ok(state.restored);
+});
+
+for (const height of [3400, 3399]) {
+  test(`Wikipedia Retina bottom clamp preserves all 6799 rows (reported height ${height})`, async () => {
+    // Measured at 100% zoom: body.scrollHeight=3400, root.scrollHeight=3399,
+    // innerHeight=1281, DPR=2, but Chrome's actual last scrollY is 2118.5.
+    const { run, state } = harness({ height, viewport: 1281, scale: 2, scrollLimit: 2118.5 });
+    await run("captureFullPage({id: 1, windowId: 2})");
+    const canvas = state.canvases.at(-1);
+    assert.equal(canvas.height, 6799, "Extent comes from the actual bottom screenshot");
+    assert.equal(canvas.rows.length, 6799);
+    canvas.rows.forEach((value, row) => assert.equal(value, row));
+    assert.ok(state.restored && state.disconnected);
+  });
+}
+
+test("fractional DPR uses the true scale despite a rounded viewport screenshot", async () => {
+  const { run, state } = harness({ height: 4001, viewport: 801, scale: 1.25, scrollLimit: 3200.8, scrollQuantum: 0.8 });
+  await run("captureFullPage({id: 1, windowId: 2})");
+  const canvas = state.canvases.at(-1);
+  assert.equal(canvas.height, 5002);
+  assert.equal(canvas.rows.length, canvas.height);
+  canvas.rows.forEach((value, row) => assert.equal(value, row));
+});
+
+test("rounded scroll positions retain overlap without omitting or duplicating rows", async () => {
+  const { run, state } = harness({ height: 2410, viewport: 801, scale: 1, scrollQuantum: 2 });
+  await run("captureFullPage({id: 1, windowId: 2})");
+  const canvas = state.canvases.at(-1);
+  assert.equal(canvas.rows.length, 2410);
+  canvas.rows.forEach((value, row) => assert.equal(value, row));
+});
+
+test("a genuine gap is rejected even on the final overlapping segment", async () => {
+  const { run, state } = harness({ height: 1700, onMessage(state, message) {
+    if (message.type === "fullPageCapture:scroll") state.y = 900;
+  } });
+  await assert.rejects(run("captureFullPage({id: 1, windowId: 2})"), /scrolled any farther/);
+  assert.ok(state.restored && state.disconnected);
+});
+
+test("a scroller blocked before its real bottom cannot return a partial screenshot", async () => {
+  const { run, state } = harness({ height: 2400, scrollLimit: 1500 });
+  await assert.rejects(run("captureFullPage({id: 1, windowId: 2})"), /scrolled any farther/);
+  assert.ok(state.restored && state.disconnected);
 });
 
 test("continually changing captures stop after bounded retries at the same position", async () => {

@@ -12,11 +12,12 @@
 // cannot see: the toolbar click must grant activeTab access to the source page,
 // and the Side Panel must be able to use that grant for capture.
 //
-// It opens a visible Chrome window while it runs; run it only when that is acceptable.
+// By default it opens a visible Chrome window; HEADLESS=1 avoids a visible profile.
 //
 // Run: node tests/sidepanel-e2e.cjs                 (needs Chrome + network)
 //      CHROME_BIN=/path/to/chrome node tests/sidepanel-e2e.cjs
 //      NORMAL_URL=... ADMOB_URL=... AI_URL=... node tests/sidepanel-e2e.cjs
+//      HEADLESS=1 node tests/sidepanel-e2e.cjs
 const { spawn } = require("node:child_process");
 const { mkdtempSync, rmSync } = require("node:fs");
 const { tmpdir } = require("node:os");
@@ -132,19 +133,26 @@ async function waitFor(label, predicate, timeoutMs = 60000) {
   throw new Error(`${label} timed out (last: ${JSON.stringify(last)})`);
 }
 
-async function launch(url) {
+async function launch(url, {
+  headless = process.env.HEADLESS === "1",
+  deviceScaleFactor = process.env.DPR,
+  windowSize = "1400,1000",
+  extensionPath = EXTENSION,
+} = {}) {
   const profile = mkdtempSync(path.join(tmpdir(), "capture-e2e-"));
   const port = await freePort();
   const child = spawn(
     CHROME,
     [
+      ...(headless ? ["--headless=new", "--disable-gpu"] : []),
+      ...(deviceScaleFactor ? [`--force-device-scale-factor=${deviceScaleFactor}`] : []),
       `--user-data-dir=${profile}`,
       `--remote-debugging-port=${port}`,
       "--remote-allow-origins=*",
       "--enable-unsafe-extension-debugging",
       "--no-first-run",
       "--no-default-browser-check",
-      "--window-size=1400,1000",
+      `--window-size=${windowSize}`,
       "--window-position=0,0",
       url,
     ],
@@ -168,7 +176,7 @@ async function launch(url) {
     ws.addEventListener("error", reject, { once: true });
   });
   const cdp = new CDP(ws);
-  const { id } = await cdp.send("Extensions.loadUnpacked", { path: EXTENSION });
+  const { id } = await cdp.send("Extensions.loadUnpacked", { path: extensionPath });
   return {
     cdp,
     browser: version.Browser,
@@ -440,7 +448,8 @@ async function main() {
   if (failed) process.exitCode = 1;
 }
 
-main().catch((error) => {
+module.exports = { launch, waitFor, PANEL_STATE };
+if (require.main === module) main().catch((error) => {
   console.error(`\nE2E ERROR: ${error.message}`);
   process.exitCode = 1;
 });

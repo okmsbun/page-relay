@@ -41,6 +41,7 @@ function sameGeometry(a, b) {
     a.viewportWidth === b.viewportWidth &&
     a.windowHeight === b.windowHeight &&
     a.windowWidth === b.windowWidth &&
+    a.devicePixelRatio === b.devicePixelRatio &&
     ["x", "y", "width", "height"].every((key) => a.crop[key] === b.crop[key]) &&
     JSON.stringify((a.regions || []).map((r) => r.crop)) ===
       JSON.stringify((b.regions || []).map((r) => r.crop))
@@ -72,8 +73,10 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
   let canvas = document.createElement("canvas");
   let context;
   let scaleY;
+  let capturedCropHeight;
   let coveredPixels = 0;
   let requestedY = 0;
+  let requestedEnd = false;
   let previousHeight = initial.documentHeight;
   let unstableCaptures = 0;
 
@@ -87,7 +90,7 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       requestedY / previousHeight,
       index + 1,
     );
-    // start already moved to the top. Every subsequent move contributes pixels.
+    // start already moved to the top; the last move probes the actual scroll limit.
     let settled =
       index === 0
         ? initial
@@ -148,25 +151,31 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
         );
       }
       requestedY = before.scrollY;
+      requestedEnd = false;
       continue;
     }
     unstableCaptures = 0;
     const image = await loadImage(dataUrl);
     if (!session.shell && initial.regions?.length) session.shell = image;
     // captureVisibleTab returns the whole browser viewport, even for an element.
-    const pixelX = image.width / before.windowWidth;
-    const pixelY = image.height / before.windowHeight;
+    // innerHeight/clientHeight are rounded CSS pixels. Dividing a rounded bitmap
+    // height by them introduces scale drift at fractional DPR/zoom.
+    const pixelX = before.devicePixelRatio;
+    const pixelY = before.devicePixelRatio;
     const cropX = Math.round(before.crop.x * pixelX);
     const cropY = Math.round(before.crop.y * pixelY);
-    const cropWidth =
-      Math.round((before.crop.x + before.crop.width) * pixelX) - cropX;
-    const cropHeight =
-      Math.round((before.crop.y + before.crop.height) * pixelY) - cropY;
+    const cropRight = before.crop.x + before.crop.width;
+    const cropBottom = before.crop.y + before.crop.height;
+    const cropWidth = (cropRight === before.windowWidth ? image.width :
+      Math.min(image.width, Math.round(cropRight * pixelX))) - cropX;
+    const cropHeight = (cropBottom === before.windowHeight ? image.height :
+      Math.min(image.height, Math.round(cropBottom * pixelY))) - cropY;
     if (cropWidth <= 0 || cropHeight <= 0)
       throw new Error("The scrolling area is not visible.");
 
     if (!context) {
-      scaleY = cropHeight / before.viewportHeight;
+      scaleY = pixelY * before.crop.height / before.viewportHeight;
+      capturedCropHeight = cropHeight;
       const height = Math.round(before.documentHeight * scaleY);
       checkCanvasSize(cropWidth, height);
       canvas.width = cropWidth;
@@ -176,17 +185,27 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
         throw new Error("Could not allocate the screenshot canvas.");
     } else if (
       cropWidth !== canvas.width ||
-      cropHeight !== Math.round(before.viewportHeight * scaleY)
+      cropHeight !== capturedCropHeight
     ) {
       throw new Error(
         "The viewport size changed during capture. Please retry.",
       );
     }
 
-    const height = Math.round(before.documentHeight * scaleY);
+    const segmentTop = Math.round(before.scrollY * scaleY);
+    // Only an explicit request past the end proves that Chrome clamped the
+    // scroller. The one-CSS-pixel bound accounts for scrollHeight/clientHeight
+    // rounding; an early stuck scroller is never treated as a completed page.
+    const atEnd = requestedEnd && requestedY > before.scrollY + 1 &&
+      Math.abs(before.scrollY + before.viewportHeight - before.documentHeight) <= 1;
+    const height = atEnd ? segmentTop + cropHeight :
+      Math.round(before.documentHeight * scaleY);
+    if (height < coveredPixels)
+      throw new Error("The page layout changed during capture. Wait for it to settle and retry.");
     if (height !== canvas.height) {
       checkCanvasSize(canvas.width, height);
-      // Preserve already captured rows when lazy content increases scrollHeight.
+      // Preserve all covered rows on lazy growth or the final raster-boundary
+      // correction. Never stretch the last screenshot or invent missing rows.
       const expanded = document.createElement("canvas");
       expanded.width = canvas.width;
       expanded.height = height;
@@ -201,16 +220,16 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     previousHeight = before.documentHeight;
 
     // Shared integer boundaries keep fractional DPR/zoom and the last crop aligned.
-    const segmentTop = Math.round(before.scrollY * scaleY);
     const segmentBottom = Math.min(canvas.height, segmentTop + cropHeight);
-    if (segmentTop > coveredPixels || segmentBottom <= coveredPixels) {
+    if (segmentTop > coveredPixels ||
+        (segmentBottom <= coveredPixels && !atEnd)) {
       throw new Error(
         "The page could not be scrolled any farther without missing screenshot sections.",
       );
     }
     const sourceY = coveredPixels - segmentTop;
     const rows = segmentBottom - coveredPixels;
-    context.drawImage(
+    if (rows > 0) context.drawImage(
       image,
       cropX,
       cropY + sourceY,
@@ -223,13 +242,15 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     );
     coveredPixels = segmentBottom;
 
-    if (coveredPixels === canvas.height) {
+    if (atEnd && coveredPixels === canvas.height) {
       return canvas;
     }
-    requestedY = Math.min(
-      coveredPixels / scaleY,
-      before.documentHeight - before.viewportHeight,
-    );
+    // Leave overlap for scroll-position quantization. Once the final viewport
+    // overlaps covered rows, ask past the end instead of repeatedly requesting
+    // an integer scrollHeight - clientHeight that Chrome cannot reach exactly.
+    const nextY = Math.max(0, coveredPixels / scaleY - Math.max(2, 2 / scaleY));
+    requestedEnd = nextY >= before.documentHeight - before.viewportHeight;
+    requestedY = requestedEnd ? before.documentHeight : nextY;
   }
   throw new Error("The page keeps changing or is too long to capture safely.");
 }
