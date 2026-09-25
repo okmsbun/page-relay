@@ -75,7 +75,8 @@
       assert(doc.body.dataset.state === "capturing", "capture starts automatically on open");
       assert(doc.getElementById("destinations").hidden, "adding unavailable while capturing");
       assert(!doc.getElementById("captureProgress").hidden, "progress visible");
-      assert(doc.getElementById("textTokens").textContent === "~100 tokens", "live text estimate visible");
+      assert(doc.getElementById("textCharacters").textContent === "400 chars", "live character count visible");
+      assert(!doc.getElementById("textTokens") && !doc.querySelector(".text-estimate"), "token estimate removed");
       sourceId = 99;
       await win.startPanelCapture(Promise.resolve({ id: 99, windowId: 2 }));
       await wait(220);
@@ -84,7 +85,7 @@
       assert(doc.getElementById("emptyState").hidden && !doc.getElementById("previewViewport").hidden, "preview replaces placeholder");
       assert(doc.getElementById("imageMeta").textContent.includes("960"), "image dimensions displayed");
       assert(!doc.getElementById("pageText").open, "text starts collapsed");
-      assert(doc.getElementById("textTokens").textContent === "~13 tokens", "token estimate retained");
+      assert(doc.getElementById("textCharacters").textContent === "49 chars", "character count retained");
       doc.querySelector("#pageText summary").click();
       assert(doc.getElementById("pageText").open, "text expands");
       assert(doc.getElementById("textPreview").textContent.includes("<script>plain text<\/script>") && !doc.querySelector("#textPreview script"), "extracted text is safe literal content");

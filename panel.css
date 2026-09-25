@@ -52,13 +52,11 @@ body[data-state="capturing"] .status-icon svg { display: none; }
 .page-text { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .page-text summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; font-size: 11px; list-style: none; }
 .page-text summary::-webkit-details-marker { display: none; }
-.page-text summary strong { margin-left: auto; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .text-chevron { color: var(--muted); }
 .page-text[open] .text-chevron { transform: rotate(180deg); }
 .text-metrics { margin-left: auto; display: grid; gap: 3px; text-align: right; }
 .text-characters { color: var(--muted); font-size: 10px; }
 .text-content { border-top: 1px solid var(--line); padding: 10px 12px; }
-.text-estimate { margin: 0 0 8px; color: var(--muted); font-size: 10px; }
 #textPreview { margin: 0; max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; user-select: text; }
 .page-text summary:focus-visible { outline: 3px solid #8396fa; outline-offset: 2px; border-radius: 8px; }
 body:has(.page-text:not([hidden])) .preview-viewport { max-height: 220px; }

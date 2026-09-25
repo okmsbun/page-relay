@@ -318,8 +318,6 @@ function showTextStats(stats) {
   if (!stats) return;
   const format = (value) =>
     value >= 1000 ? `${(value / 1000).toFixed(1)}K` : String(value);
-  document.getElementById("textTokens").textContent =
-    `~${format(stats.estimatedTokens)} tokens`;
   document.getElementById("textCharacters").textContent =
     `${format(stats.characters)} chars${stats.truncated ? " · Text limit reached" : ""}`;
 }
@@ -415,7 +413,7 @@ async function startPanelCapture(sourceTab) {
   document.getElementById("pageText").open = false;
   document.getElementById("textPreview").textContent =
     "Collecting rendered page text…";
-  showTextStats({ characters: 0, estimatedTokens: 0 });
+  showTextStats({ characters: 0 });
   setStatus(
     "capturing",
     "Capturing…",
