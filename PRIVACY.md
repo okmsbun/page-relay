@@ -20,7 +20,7 @@ Everything happens locally, inside your browser:
 
 - Scrolling, measuring and text extraction run as an injected script in the page
   you are capturing.
-- Screenshot stitching (canvas), text display, token estimate and character count
+- Screenshot stitching (canvas), text display and character count
   run in the PageRelay side panel document.
 - No captured content is sent to PageRelay or to any third party while capturing.
 
