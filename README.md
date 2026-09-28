@@ -1,7 +1,8 @@
-# PageRelay
+# Page Relay
 
-A Chrome extension that captures a full-page screenshot plus the rendered page
-text and prepares that context in your AI chats, from Chrome's Side Panel.
+A Chrome extension that captures a full-page screenshot and rendered page text,
+then prepares the screenshot in your AI chats from Chrome's Side Panel. Page text
+can be included as an optional TXT attachment.
 
 It prepares the message - it never sends it for you. You review the draft and
 submit it yourself.
@@ -15,13 +16,14 @@ submit it yourself.
 - Preserves page context: fixed/sticky elements are handled, the original scroll
   position is restored, and the screenshot keeps the correct
   devicePixelRatio/Retina resolution.
-- Prepares that context in a supported AI chat: the PNG, a `.txt` file with the
-  extracted text and a title/URL header. Existing draft text and attachments stay
-  in place; PageRelay never writes text into the message editor.
+- Prepares the PNG in a supported AI chat. Turn on **Include page text** to also
+  attach a `.txt` file with extracted text and a title/URL header. Existing
+  draft text and attachments stay in place; Page Relay never writes text into
+  the message editor.
 - Runs in Chrome's native Side Panel: one panel session per capture, and
   switching tabs afterwards does not replace the captured source.
 
-Preparing means _drafting_, not sending. PageRelay never clicks Send, never
+Preparing means _drafting_, not sending. Page Relay never clicks Send, never
 presses Enter, and never starts model generation. A successful preparation means
 "the captured context is in that chat's draft"; you still press Send.
 
@@ -51,17 +53,20 @@ without a verified integration are not listed at all; there are no
 ## Usage
 
 1. Open the webpage you want to capture and keep that tab active.
-2. Click the PageRelay toolbar icon to open the Side Panel. The capture starts
+2. Click the Page Relay toolbar icon to open the Side Panel. The capture starts
    automatically; keep the source tab active until it finishes.
-3. Click **Refresh** to list the AI conversations open in your browser, and
+3. Optionally turn on **Include page text**. It starts off for every new capture;
+   enabling it after capture does not recapture the page.
+4. Click **Refresh** to list the AI conversations open in your browser, and
    select one or more of them.
-4. Click **Add to N chats**. PageRelay attaches the PNG and the extracted text
-   alongside existing attachments, preserving any draft text.
-5. Review each prepared chat and press Send there yourself.
+5. Click **Add to N chats**. Page Relay attaches the PNG, plus TXT only when
+   selected, alongside existing attachments and draft text.
+6. Review each prepared chat and press Send there yourself.
 
-Existing drafts and attachments are preserved. The TXT starts with the page title
-and source URL, plus a truncation note if extraction reached a technical limit;
-the extracted text below that header is unchanged. No delivery ID is put in its contents.
+Existing drafts and attachments are preserved. When included, TXT starts with
+the page title and source URL, plus a truncation note if extraction reached a
+technical limit. The extracted text below that header is unchanged. No delivery
+ID is put in its contents.
 
 ChatGPT and Claude prepare concurrently, with destinations within each provider
 processed in order. Gemini runs afterward with coordinated tab activation.
@@ -71,7 +76,7 @@ the Needs review result before doing anything else.
 
 ## Privacy
 
-PageRelay runs entirely inside your browser, has no server or backend, and
+Page Relay runs entirely inside your browser, has no server or backend, and
 collects no analytics. Captured page data stays in memory and is only placed into
 the AI chats you explicitly select; those services then receive it under their own
 terms. See [PRIVACY.md](PRIVACY.md) for details.

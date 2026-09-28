@@ -94,7 +94,7 @@ function geminiHarness({
       scripting: {
         executeScript: async (options) => {
           assert.equal(options.target.tabId, 2);
-          assert.equal(options.args[0].text, "Page title: Untitled page\nURL: \n\n---\n\nfull text");
+          assert.equal(options.args[0].text, undefined);
           assert.equal(
             options.args[0].screenshot,
             "data:image/png;base64,test",
@@ -229,7 +229,7 @@ test("no adapter can submit: no send click, no key events, no submit API", () =>
   assert.doesNotMatch(panel, /Send to</);
 });
 
-test("all adapters inject identical metadata TXT bytes and stable filenames for one capture, never a prompt", async () => {
+test("all adapters keep one delivery identity while page text is toggled, never a prompt", async () => {
   let serial = 0;
   const received = [];
   const context = vm.createContext({
@@ -247,14 +247,18 @@ test("all adapters inject identical metadata TXT bytes and stable filenames for 
   const capture = { title: "Source title", url: "https://example.com/source", screenshot: "data:image/png;base64,test", text: "Original\n\n  whitespace\n", truncated: true };
   for (const name of ["prepareInChatGPT", "prepareInClaude", "prepareInGemini", "prepareInChatGPT"])
     await vm.runInContext(name, context)({ id: 1, url: "destination" }, capture);
+  capture.includeText = true;
+  for (const name of ["prepareInChatGPT", "prepareInClaude", "prepareInGemini"])
+    await vm.runInContext(name, context)({ id: 1, url: "destination" }, capture);
   assert.equal(serial, 1);
-  for (const payload of received) {
-    assert.equal(payload.text, "Page title: Source title\nURL: https://example.com/source\nNote: Extracted page text was truncated because it reached a technical capture limit.\n\n---\n\n" + capture.text);
+  for (const [index, payload] of received.entries()) {
+    assert.equal(payload.includeText, index >= 4);
+    assert.equal(payload.text, index >= 4 ? "Page title: Source title\nURL: https://example.com/source\nNote: Extracted page text was truncated because it reached a technical capture limit.\n\n---\n\n" + capture.text : undefined);
     assert.equal(payload.png, received[0].png);
     assert.equal(payload.txt, received[0].txt);
     assert.equal(payload.screenshot, capture.screenshot);
     assert.equal(payload.prompt, undefined);
-    assert.ok(!payload.text.includes(payload.deliveryId));
+    if (payload.text) assert.ok(!payload.text.includes(payload.deliveryId));
   }
   await vm.runInContext("prepareInChatGPT", context)({ id: 1 }, { ...capture, truncated: false });
   assert.equal(serial, 2);

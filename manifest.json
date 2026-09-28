@@ -1,11 +1,11 @@
 {
     "manifest_version": 3,
-    "name": "PageRelay",
+    "name": "Page Relay",
     "version": "0.1.2",
     "minimum_chrome_version": "116",
-    "description": "Capture a full-page screenshot and rendered page text, then prepare that context in a supported AI chat.",
+    "description": "Capture a full-page screenshot and optionally attach rendered page text in a supported AI chat.",
     "action": {
-        "default_title": "PageRelay",
+        "default_title": "Page Relay",
         "default_icon": {
             "16": "assets/icons/icon-16.png",
             "32": "assets/icons/icon-32.png",

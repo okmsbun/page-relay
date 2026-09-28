@@ -425,6 +425,7 @@ let captureStarted = false;
 async function startPanelCapture(sourceTab) {
   if (captureStarted) return;
   captureStarted = true;
+  document.getElementById("includePageText").checked = false;
   destinationUI.suspend();
   progressValue = 0;
   document.getElementById("progressFill").style.width = "0%";

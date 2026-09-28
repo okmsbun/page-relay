@@ -11,6 +11,8 @@ body { width: 100%; min-height: 100vh; margin: 0; padding: 22px; background: var
 main { min-width: 0; padding: 3px; margin: -3px; }
 button { font: inherit; cursor: pointer; }
 button:focus-visible, [tabindex]:focus-visible { outline: 3px solid #8396fa; outline-offset: 3px; }
+.include-page-text { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 12px; cursor: pointer; }
+.include-page-text input { margin: 0; accent-color: var(--accent); }
 .header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .app-icon { width: 36px; height: 36px; flex-shrink: 0; object-fit: contain; }
 h1 { font-size: 15px; font-weight: 650; letter-spacing: -.35px; margin: 0; }

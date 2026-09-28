@@ -4,6 +4,7 @@ const destinationUI = (() => {
   const search = document.getElementById("destinationSearch");
   const refreshButton = document.getElementById("refreshDestinations");
   const sendButton = document.getElementById("sendCapture");
+  const includePageText = document.getElementById("includePageText");
   const note = document.getElementById("destinationNote");
   const tabs = document.getElementById("providerTabs");
   const emptyState = document.getElementById("noDestinations");
@@ -302,6 +303,8 @@ const destinationUI = (() => {
         ),
     );
     busy = true;
+    capture.includeText = includePageText.checked;
+    includePageText.disabled = true;
     refreshButton.disabled = search.disabled = true;
     note.textContent = "Keep the Side Panel open while the capture is added.";
     try {
@@ -350,6 +353,7 @@ const destinationUI = (() => {
         .join(" · ");
     } finally {
       busy = false;
+      includePageText.disabled = false;
       refreshButton.disabled = search.disabled = false;
       render();
     }
@@ -360,6 +364,7 @@ const destinationUI = (() => {
   return {
     async show(result) {
       capture = result;
+      includePageText.checked = false;
       selection.clear();
       statuses.clear();
       search.value = "";

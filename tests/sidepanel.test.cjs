@@ -102,7 +102,8 @@ async function runPanelSession({ pin, tabs, toggles = {} }) {
 
 test("native global Side Panel replaces the action popup", () => {
   assert.equal(manifest.action.default_popup, undefined);
-  assert.equal(manifest.name, "PageRelay");
+  assert.equal(manifest.name, "Page Relay");
+  assert.equal(manifest.action.default_title, "Page Relay");
   assert.equal(manifest.side_panel.default_path, "sidepanel.html");
   assert.ok(fs.existsSync(path.join(root, manifest.side_panel.default_path)));
 });
@@ -268,6 +269,8 @@ test("manifest/action icons use supplied correctly sized PNGs and panel uses fin
     "utf8",
   );
   assert.match(html, /class="app-icon" src="assets\/icons\/icon-48.png"/);
+  assert.match(html, /<title>Page Relay<\/title>/);
+  assert.match(html, /<h1>Page Relay<\/h1>/);
   assert.match(html, /srcset="[^"]*icon-128.png 2x"/);
   assert.match(html, /rel="icon"[^>]+icon-32.png/);
 });

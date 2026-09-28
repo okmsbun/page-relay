@@ -1,4 +1,4 @@
-# PageRelay integration notes
+# Page Relay integration notes
 
 Developer notes for the destination integrations. See `README.md` for the user
 flow and `PRIVACY.md` for data handling.
@@ -40,17 +40,17 @@ restarts. There are no recapture buttons.
 
 ### Permissions
 
-| Permission | Why PageRelay needs it |
+| Permission | Why Page Relay needs it |
 | ---------- | ---------------------- |
 | `activeTab` | Grants temporary access to the source page after the toolbar click. |
 | `scripting` | Injects `page-text.js` and `content.js` into the captured tab to scroll it, measure it and extract its rendered text. |
-| `sidePanel` | Hosts the PageRelay UI in Chrome's side panel. |
+| `sidePanel` | Hosts the Page Relay UI in Chrome's side panel. |
 | `storage` | Keeps the pinned capture source tab in `chrome.storage.session` between the toolbar click and the panel loading. Session storage only; the extension writes nothing to disk. |
 | `tabs` | Reads the clicked tab's id/url to pin the capture source, to list AI conversations across windows, and to tell a real protected page from a lookup failure. |
 | ChatGPT, Claude and Gemini host access | Lets preparation script the supported AI chats, including open background tabs. |
 
 No debugger, cookie, clipboard, download, or webRequest access is requested.
-No analytics, remote endpoints, or PageRelay servers exist.
+No analytics, remote endpoints, or Page Relay servers exist.
 
 ### Icons
 
@@ -73,10 +73,12 @@ symbol fallback; no third-party favicon service or extra permission is used.
 
 ## Current capability
 
-This extension **prepares** a chat: it attaches the full-page PNG, attaches the
-extracted page text with a title/URL header, and preserves existing composer content. It never submits:
-no Send click, no Enter/Return, no generation is started. The user reviews the
-draft and sends it. "Added" therefore means "the capture is in that chat's draft".
+This extension **prepares** a chat: it attaches the full-page PNG and, when
+**Include page text** is on, the extracted page text with a title/URL header.
+The toggle defaults off for each new capture. Existing composer content is
+preserved. It never submits: no Send click, no Enter/Return, and no model
+generation. The user reviews the draft and sends it. "Added" therefore means
+"the capture is in that chat's draft".
 
 | Provider | Recognized chat routes                          | Composer preparation                                                                                                |
 | -------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -134,24 +136,28 @@ directly.
 
 ## Attachment-only preparation
 
-`capture-preparation.js` builds one stable delivery identity and the same TXT bytes
+`capture-preparation.js` builds one stable delivery identity and the same optional TXT bytes
 for each capture, shared by all destinations. The header contains `Page title:`
 and `URL:`, an optional technical-limit truncation note, a separator, then the
 original extracted text. Internal IDs are used in filenames, never TXT content.
+Text is collected during the existing screenshot traversal even when the toggle
+is off; enabling it afterward does not trigger a second traversal. With text
+off, the injected provider payload omits the extracted text bytes.
 The adapters never focus or edit the message editor and never inspect Send to
 decide whether files are prepared.
 
 Before uploading, the injected routine snapshots the editor's exact HTML (or
 textarea value) and existing attachment identities, including image sources.
 Rendered attachments are retained by the provider's normal upload change handler;
-only the new PNG/TXT are assigned to the upload input. Existing files are never
+only the new PNG, or PNG and TXT when selected, are assigned to the upload
+input. Existing files are never
 copied into the new batch. A native selection not yet represented by rendered
 attachments is rejected before replacing that input's selection. Existing upload
 progress is Busy and can be retried manually once finished.
 
-Completion requires one matching new PNG and one matching new TXT, no visible
-upload progress/error, unchanged editor content, and preservation of the original
-attachment set. The expected count is the initial count plus two, not always two.
+Completion requires one matching new PNG, plus one matching new TXT when selected,
+no visible upload progress/error, unchanged editor content, and preservation of the
+original attachment set. The expected count rises by one with text off or two with text on.
 Changes by the user or provider during preparation result in Needs review; no
 restoration or automatic retry overwrites user work. A provider that replaces
 existing attachment state instead of appending is detected and reported for review.
@@ -160,9 +166,10 @@ UI; the live append checks below are required for current account/UI variants.
 
 ChatGPT uses the current composer form and its upload control, including the
 `data-composer-markdown` editor variant. Claude uses its ChatComposer and file
-thumbnail tiles. Both receive PNG and TXT in one new upload batch.
+thumbnail tiles. Both receive PNG and optional TXT in one new upload batch.
 
-Gemini receives PNG, waits for its matching preview, then uploads TXT. It may
+Gemini receives PNG and waits for its matching preview. It uploads TXT afterward
+only when selected; its TXT upload path is skipped entirely otherwise. It may
 rename/re-encode PNG to `<unique-stem>_<suffix>.jpg`; matching accepts that observed
 conversion and verifies a decoded image. Existing files are included in preservation
 checks. Consent is never accepted automatically. Gemini temporarily activates its
@@ -213,7 +220,7 @@ check delivers native pointer/keyboard input. Neither opens a visible temporary 
 Fixtures prove queue/UI behavior and adapter state transitions; they are not
 authenticated provider end-to-end tests. No real messages are sent by these tests.
 
-1. Reload **PageRelay** at `chrome://extensions`; review the Side Panel
+1. Reload **Page Relay** at `chrome://extensions`; review the Side Panel
    permissions (`activeTab`, `scripting`, `sidePanel`, `storage`, `tabs`), host
    access (ChatGPT, Claude and Gemini only) and the final extension icon. Pin
    the extension, then
@@ -231,14 +238,15 @@ authenticated provider end-to-end tests. No real messages are sent by these test
      panel after capture to check its layout.
 2. Open disposable ChatGPT, Claude and Gemini conversations, including an empty
    new chat. Open the panel on a nonsensitive source page, let capture finish,
-   select those destinations across provider tabs, then click **Add to N chats**.
-   Confirm only the PNG and TXT were added, the TXT header has the title/URL,
+   leave **Include page text** off, select destinations across provider tabs,
+   then click **Add to N chats**. Confirm only one PNG was added per chat and
    the editor stays empty, and **nothing was submitted**: no new user
    turn, no generation. The panel must show **Added**. Test a new chat's URL
    transition as well.
-3. Repeat for each provider with existing text, existing attachments, and both.
-   Original text and attachments must remain unchanged; only the new PNG/TXT are
-   added and the result is Added. Verify TXT metadata and the unchanged extracted
+3. Repeat with **Include page text** on for each provider, with existing text,
+   existing attachments, and both. Original text and attachments must remain
+   unchanged; only the new PNG/TXT are added and the result is Added. Verify TXT
+   metadata and the unchanged extracted
    body, then repeat the Add action to check that no duplicate files appear.
    During another attempt, edit the draft: the result must be Needs review and
    the edit must remain untouched.
@@ -268,11 +276,11 @@ describe file uploads, but do not establish stable browser automation selectors.
 Before implementing and enabling an adapter, inspect its actual signed-in DOM
 using a disposable conversation and nonsensitive sample content. Verify:
 
-- A unique editable composer and scoped attachment controls for both files.
-- Both the PNG and complete text are accepted together; neither is silently lost.
+- A unique editable composer and scoped attachment controls for the expected files.
+- The PNG is accepted alone, and PNG plus complete text are accepted when text is enabled; neither expected file is silently lost.
 - Existing text and attachments are detectable before modifying anything.
 - Upload completion/error indicators are distinguishable from merely selected files.
-- The composer text remains unchanged and both new attachments are ready while
+- The composer text remains unchanged and all expected new attachments are ready while
   pre-existing attachments remain present and nothing is submitted.
 - Editor replacement, background tabs, new-chat URL transitions, failed uploads,
   and user edits during preparation cannot produce a duplicate or a hidden submit.

@@ -82,6 +82,8 @@
       await wait(220);
       assert(captureCalls.join(",") === "1" && queries === 1, "source pinned once and duplicate startup ignored");
       assert(doc.body.dataset.state === "success", "automatic capture completes");
+      const includePageText = doc.getElementById("includePageText");
+      assert(!includePageText.checked, "page text attachment defaults off");
       assert(doc.getElementById("emptyState").hidden && !doc.getElementById("previewViewport").hidden, "preview replaces placeholder");
       assert(doc.getElementById("imageMeta").textContent.includes("960"), "image dimensions displayed");
       assert(!doc.getElementById("pageText").open, "text starts collapsed");
@@ -162,10 +164,13 @@
       win.eval("destinationUI").configurePreparation(async (destination, capture) => {
         deliveries.push(destination.id);
         assert(capture.screenshot === png && capture.text.includes("Revenue"), "identical screenshot and text added");
+        assert(capture.includeText === true, "toggle enables TXT without a second capture");
         if (destination.id === 11) throw new Error("Test failure");
         return { prepared: true };
       });
       assert(deliveries.length === 0, "selection alone never adds anything");
+      includePageText.click();
+      assert(captureCalls.join(",") === "1", "enabling page text does not recapture");
       doc.getElementById("sendCapture").click(); await wait(60);
       assert(deliveries.slice().sort((a, b) => a - b).join(",") === "10,11,13", "add includes selected conversations on hidden provider tabs");
       assert(doc.getElementById("destinationNote").textContent === "2 added to a chat draft · 1 failed", "partial results summarized across providers");
@@ -253,8 +258,17 @@
       // tab that happens to be active when the panel document loads.
       sourcePin = { id: 5, windowId: 2, url: "https://github.com/org/repo", pinnedAt: Date.now() };
       ({ frame, win, doc } = await openPanel()); await wait(220);
+      assert(!doc.getElementById("includePageText").checked, "new session resets page text toggle");
       assert(captureCalls.join(",") === "1,5" && queries === 1, "reopening captures the tab pinned by the toolbar click");
-      assert(doc.getElementById("sendCapture").disabled && !doc.querySelector(".destination-feedback.prepared"), "new panel session does not reuse selection or results");    // Clicking the toolbar icon while the panel is open restarts the session on that tab.
+      assert(doc.getElementById("sendCapture").disabled && !doc.querySelector(".destination-feedback.prepared"), "new panel session does not reuse selection or results");
+      win.eval("destinationUI").configurePreparation(async (_destination, capture) => {
+        assert(capture.includeText === false && capture.text.includes("Revenue"), "default Add uses PNG mode while keeping collected text");
+        return { prepared: true };
+      });
+      doc.getElementById("destination-10").click();
+      doc.getElementById("sendCapture").click(); await wait(60);
+      assert(doc.querySelector(".destination-feedback.prepared"), "default Add completes with page text off");
+      // Clicking the toolbar icon while the panel is open restarts the session on that tab.
       win.__onPanelMessage({ type: "captureSource:pinned" });
       await wait(500);
       win = frame.contentWindow; doc = frame.contentDocument;

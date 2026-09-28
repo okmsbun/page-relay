@@ -1,5 +1,5 @@
 /* Route composer preparation only to providers with a verified integration adapter.
-   Adapters attach PNG + metadata TXT without editing or submitting a message. */
+   Adapters attach PNG and optional metadata TXT without editing or submitting a message. */
 async function prepareInDestination(destination, capture) {
   const adapters = {
     chatgpt: prepareInChatGPT,

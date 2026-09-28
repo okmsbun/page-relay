@@ -17,16 +17,17 @@
   };
   document.addEventListener("submit", (event) => { event.preventDefault(); submissions++; }, true);
   const prepare = { chatgpt: prepareCaptureInComposer, claude: prepareInClaudeComposer, gemini: prepareInGeminiComposer }[provider];
-  async function run(mode, truncated = false) {
+  async function run(mode, includeText, truncated = false) {
     const editorMarkup = provider === "chatgpt" ? '<div id="prompt-textarea" contenteditable="true" style="min-height:30px"></div>' : provider === "claude" ? '<div data-testid="chat-input" contenteditable="true" style="min-height:30px"></div>' : '<rich-textarea><div role="textbox" contenteditable="true" style="min-height:30px"></div></rich-textarea>';
     const inputMarkup = provider === "gemini" ? '<uploader><input type="file" multiple accept="image/*"><images-files-uploader><input type="file" multiple accept=".txt,.pdf"></images-files-uploader></uploader>' : `<input type="file" multiple ${provider === "claude" ? 'data-testid="file-upload"' : ''}>`;
     fixture.innerHTML = `<${provider === "chatgpt" ? 'form' : 'div'} ${provider === "claude" ? 'data-cds="ChatComposer"' : provider === "gemini" ? 'data-node-type="input-area"' : ''}>${editorMarkup}${inputMarkup}<div id="tiles"></div><button type="button" id="send" disabled>Send</button><simplified-input-menu><button type="button" aria-haspopup="menu">Upload</button></simplified-input-menu></${provider === "chatgpt" ? 'form' : 'div'}>`;
     const editor = () => fixture.querySelector('[contenteditable="true"]');
     const container = fixture.firstElementChild;
     const tiles = fixture.querySelector("#tiles");
-    const capture = { screenshot, title: "Example Page", url: "https://example.com/page", text: "Rendered text\nRepeat\nRepeat", truncated };
+    const capture = { screenshot, title: "Example Page", url: "https://example.com/page", text: "Rendered text\nRepeat\nRepeat", truncated, includeText };
     const destination = { providerId: provider, url: location.origin + location.pathname + location.search };
     const payload = CapturePreparation.payload(destination, capture);
+    assert(includeText || payload.text === undefined, "text-off payload does not expose extracted text to provider tab");
     const uploaded = [];
     let changes = 0;
     function tile(name, image = false) {
@@ -64,7 +65,7 @@
       if (mode === "removed-existing") tiles.replaceChildren();
       for (const file of input.files) {
         uploaded.push(file);
-        if (mode === "missing-file" && file.type === "text/plain") continue;
+        if (mode === "missing-file" && file.type === (includeText ? "text/plain" : "image/png")) continue;
         if (mode === "wrong-name") tile("unrelated-" + file.name, file.type === "image/png");
         else tile(file.name, file.type === "image/png");
       }
@@ -88,46 +89,52 @@
     if (mode === "consent" && provider === "gemini") fixture.append(document.createElement("upload-image-disclaimer-dialog"));
     if (mode === "invalid-png") payload.screenshot = "data:text/plain;base64,aGVsbG8=";
     if (mode === "no-input") inputs.forEach((input) => input.remove());
+    if (mode === "no-text-input" && provider === "gemini") inputs[1].remove();
     if (mode === "disabled-input") inputs.forEach((input) => input.disabled = true);
     const running = prepare(payload);
     let concurrent;
     if (mode === "concurrent") concurrent = await prepare({ ...payload, deliveryId: "competing-operation" });
     const result = await running;
     if (mode === "concurrent") assert(concurrent.busy && !concurrent.needsReview, "same tab cannot prepare competing operations");
-    return { result, uploaded, changes, payload, capture, initialText, draft: editor().innerHTML, existingPresent: !existing || tiles.textContent.includes("personal.pdf"), count: tiles.children.length, repeat: () => prepare({ ...payload, deadline: Date.now() + 140000 }), currentChanges: () => changes, forget: () => globalThis.__pageRelayPreparations.clear(), removeOwn: () => tiles.lastElementChild.remove() };
+    return { result, uploaded, changes, payload, capture, initialText, draft: editor().innerHTML, existingPresent: !existing || tiles.textContent.includes("personal.pdf"), count: tiles.children.length, initialCount: original.length, repeat: () => prepare({ ...payload, deadline: Date.now() + 140000 }), currentChanges: () => changes, forget: () => globalThis.__pageRelayPreparations.clear(), removeOwn: () => tiles.lastElementChild.remove() };
   }
   try {
-    for (const mode of ["empty", "text", "attachment", "both", "multiple", "no-send", "replace-editor", "rerender-existing", "selected-acknowledged", "progress", "empty-ui", "modern", "concurrent"]) {
-      const value = await run(mode, mode === "multiple");
+    for (const includeText of [false, true]) {
+    for (const mode of ["empty", "text", "attachment", "both", "multiple", "no-send", "replace-editor", "rerender-existing", "selected-acknowledged", "progress", "empty-ui", "modern", "concurrent", ...(provider === "gemini" && !includeText ? ["no-text-input"] : [])]) {
+      const value = await run(mode, includeText, mode === "multiple");
       assert(value.result.prepared, mode + ": prepared (" + JSON.stringify(value.result) + ")");
       assert(value.draft === value.initialText && value.existingPresent, mode + ": existing rich text and attachments preserved");
-      assert(value.uploaded.length === 2 && value.uploaded[0].type === "image/png" && value.uploaded[1].type === "text/plain", mode + ": exactly one new PNG and TXT, no old files reuploaded");
-      const txt = await value.uploaded[1].text();
-      assert(txt === value.payload.text && txt.startsWith("Page title: Example Page\nURL: https://example.com/page\n") && txt.endsWith(value.capture.text), mode + ": TXT metadata and original body bytes are correct");
-      assert(!txt.includes(value.payload.deliveryId) && txt.includes("truncated") === value.capture.truncated, mode + ": truncation only when applicable, no internal ID in TXT");
+      assert(value.uploaded.length === (includeText ? 2 : 1) && value.uploaded[0].type === "image/png" && (!includeText || value.uploaded[1].type === "text/plain"), mode + ": exactly the expected new files, no old files reuploaded");
+      assert(value.count === value.initialCount + (includeText ? 2 : 1), mode + ": attachment count rises by expected number");
+      if (includeText) {
+        const txt = await value.uploaded[1].text();
+        assert(txt === value.payload.text && txt.startsWith("Page title: Example Page\nURL: https://example.com/page\n") && txt.endsWith(value.capture.text), mode + ": TXT metadata and original body bytes are correct");
+        assert(!txt.includes(value.payload.deliveryId) && txt.includes("truncated") === value.capture.truncated, mode + ": truncation only when applicable, no internal ID in TXT");
+      }
       const again = await value.repeat();
       assert(again.prepared && again.duplicate && value.currentChanges() === value.changes, mode + ": repeated preparation never reuploads (" + JSON.stringify(again) + ")");
     }
     for (const mode of ["edit", "removed-existing", "upload-error", "missing-file", "wrong-name", "changed-image", "extra-attachment"]) {
-      const value = await run(mode);
+      const value = await run(mode, includeText);
       assert(!value.result.prepared && value.result.needsReview, mode + ": uncertainty ends with review");
       const count = value.changes; await value.repeat();
       assert(value.currentChanges() === count, mode + ": uncertain attempts cannot duplicate partial uploads");
       if (mode === "edit") assert(value.draft === "User edited during preparation", "user edits are never restored or overwritten");
     }
     for (const mode of ["wrong-url", "unresolved-selection", "invalid-png", "disabled-input", "no-input", ...(provider === "gemini" ? ["consent"] : [])]) {
-      const value = await run(mode);
+      const value = await run(mode, includeText);
       assert(!value.result.prepared && !value.result.needsReview && !value.changes, mode + ": unsafe preflight fails before upload");
     }
-    const recovered = await run("both");
+    const recovered = await run("both", includeText);
     recovered.forget();
     const existingPair = await recovered.repeat();
     assert(existingPair.prepared && existingPair.duplicate && recovered.currentChanges() === recovered.changes, "existing own file pair protects against duplicate after ledger loss");
     recovered.removeOwn();
     const missingPair = await recovered.repeat();
     assert(!missingPair.prepared && missingPair.needsReview && recovered.currentChanges() === recovered.changes, "previous success never silently re-adds a removed file");
-    const busy = await run("busy");
+    const busy = await run("busy", includeText);
     assert(busy.result.busy && busy.result.needsReview === false && busy.changes === 0, "generation stays retryable Busy before mutation");
+    }
     assert(!globalThis.__pageCapturePreparing, "per-tab lock released");
     assert(edits === 0 && keys === 0 && submissions === 0, "no composer writes, Send clicks, form submissions or key simulation");
     document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
