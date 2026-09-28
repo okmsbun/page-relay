@@ -101,3 +101,97 @@ verification before a provider is listed.
 ## License
 
 MIT - see [LICENSE](LICENSE).
+
+## Release / Chrome Web Store package
+
+Page Relay has no compilation or bundling step. The Chrome Web Store ZIP is
+created from runtime files only, with `manifest.json` at the ZIP root.
+
+### Release workflow
+
+1. Update `version` in `manifest.json`.
+2. Run the full test suite:
+
+   ```bash
+   node --test tests/*.test.cjs
+   node tests/browser-check.cjs
+   node tests/provider-controls.cjs
+   ```
+
+3. Test the source directory locally in Chrome with **Load unpacked**.
+4. Recreate `release/` with only runtime files:
+
+   ```bash
+   ./scripts/package.sh
+   ```
+
+5. The script creates `pagerelay-<manifest-version>.zip` with `manifest.json` at
+   the ZIP root and prints its filename.
+6. Verify the ZIP contents and version:
+
+   ```bash
+   version=$(node -p 'require("./manifest.json").version')
+   unzip -l "pagerelay-$version.zip"
+   unzip -p "pagerelay-$version.zip" manifest.json
+   ```
+
+   Confirm that `manifest.json` is at the root, its version matches the ZIP
+   filename, and no development files are included.
+
+7. Load `release/` with **Load unpacked** for a final smoke test: capture a
+   normal page, prepare attachments in ChatGPT, Claude, and Gemini, and confirm
+   that no message is sent automatically.
+8. Upload the generated ZIP to the Chrome Web Store.
+
+### Runtime files
+
+The package contains these files at its root:
+
+```text
+manifest.json
+sidepanel.html
+panel.css
+service-worker.js
+panel.js
+sidepanel-session.js
+capture-layout.js
+capture-preparation.js
+content.js
+page-text.js
+ai-providers.js
+chat-destinations.js
+destinations-ui.js
+provider-delivery.js
+chatgpt-adapter.js
+claude-adapter.js
+gemini-adapter.js
+```
+
+It also contains `assets/icons/icon-16.png`, `icon-32.png`, `icon-48.png`, and
+`icon-128.png`. The Web Store ZIP excludes `tests/`, `README.md`,
+`INTEGRATIONS.md`, `PRIVACY.md`, `LICENSE`, and
+`assets/icons/icon-1024.png`. Both `release/` and `pagerelay-*.zip` are
+gitignored.
+
+### Manual packaging / troubleshooting
+
+If the script cannot run, use the runtime list above from the repository root:
+
+```bash
+rm -rf release
+mkdir -p release/assets/icons
+cp manifest.json sidepanel.html panel.css service-worker.js panel.js \
+  sidepanel-session.js capture-layout.js capture-preparation.js content.js \
+  page-text.js ai-providers.js chat-destinations.js destinations-ui.js \
+  provider-delivery.js chatgpt-adapter.js claude-adapter.js gemini-adapter.js release/
+cp assets/icons/icon-{16,32,48,128}.png release/assets/icons/
+version=$(node -p 'require("./manifest.json").version')
+rm -f "pagerelay-$version.zip"
+(cd release && zip -q -r "../pagerelay-$version.zip" .)
+unzip -l "pagerelay-$version.zip"
+unzip -p "pagerelay-$version.zip" manifest.json
+```
+
+Check that the ZIP root contains `manifest.json`, the version matches, and only
+the listed runtime files and icons are present before loading `release/` for the
+final smoke test.
