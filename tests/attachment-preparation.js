@@ -19,7 +19,13 @@
   const prepare = { chatgpt: prepareCaptureInComposer, claude: prepareInClaudeComposer, gemini: prepareInGeminiComposer }[provider];
   async function run(mode, includeText, truncated = false) {
     const editorMarkup = provider === "chatgpt" ? '<div id="prompt-textarea" contenteditable="true" style="min-height:30px"></div>' : provider === "claude" ? '<div data-testid="chat-input" contenteditable="true" style="min-height:30px"></div>' : '<rich-textarea><div role="textbox" contenteditable="true" style="min-height:30px"></div></rich-textarea>';
-    const inputMarkup = provider === "gemini" ? '<uploader><input type="file" multiple accept="image/*"><images-files-uploader><input type="file" multiple accept=".txt,.pdf"></images-files-uploader></uploader>' : `<input type="file" multiple ${provider === "claude" ? 'data-testid="file-upload"' : ''}>`;
+    const inputMarkup = provider === "gemini"
+      ? '<uploader><input type="file" multiple accept="image/*"><images-files-uploader><input type="file" multiple accept=".txt,.pdf"></images-files-uploader></uploader>'
+      : provider === "claude"
+        ? '<input type="file" multiple data-testid="file-upload">'
+        : '<input type="file" multiple accept="image/*" data-testid="image-upload">' +
+          '<input type="file" multiple accept="image/*,.txt,.pdf" data-testid="general-upload">' +
+          (mode === "ambiguous-general" ? '<input type="file" multiple accept="image/*,.txt,.pdf" data-testid="second-general-upload">' : '');
     fixture.innerHTML = `<${provider === "chatgpt" ? 'form' : 'div'} ${provider === "claude" ? 'data-cds="ChatComposer"' : provider === "gemini" ? 'data-node-type="input-area"' : ''}>${editorMarkup}${inputMarkup}<div id="tiles"></div><button type="button" id="send" disabled>Send</button><simplified-input-menu><button type="button" aria-haspopup="menu">Upload</button></simplified-input-menu></${provider === "chatgpt" ? 'form' : 'div'}>`;
     const editor = () => fixture.querySelector('[contenteditable="true"]');
     const container = fixture.firstElementChild;
@@ -28,7 +34,7 @@
     const destination = { providerId: provider, url: location.origin + location.pathname + location.search };
     const payload = CapturePreparation.payload(destination, capture);
     assert(includeText || payload.text === undefined, "text-off payload does not expose extracted text to provider tab");
-    const uploaded = [];
+    const uploaded = [], usedInputs = [];
     let changes = 0;
     function tile(name, image = false) {
       const node = document.createElement(provider === "gemini" ? "uploader-file-preview" : "div");
@@ -57,11 +63,14 @@
     }
     if (mode === "modern" && provider === "chatgpt") { editor().removeAttribute("id"); editor().setAttribute("data-composer-markdown", ""); container.setAttribute("data-chatgpt-composer", ""); }
     const inputs = [...fixture.querySelectorAll('input[type="file"]')];
+    if (provider === "chatgpt") assert(inputs.length >= 2 && inputs[0].dataset.testid === "image-upload", "ChatGPT fixture has an image-only control before the general uploader");
     if (["unresolved-selection", "selected-acknowledged"].includes(mode)) {
-      const dt = new DataTransfer(); dt.items.add(new File(["private"], "personal.pdf")); inputs[0].files = dt.files;
+      const dt = new DataTransfer(); dt.items.add(new File(["private"], "personal.pdf"));
+      (provider === "chatgpt" ? inputs.find((input) => input.dataset.testid === "general-upload") : inputs[0]).files = dt.files;
     }
     for (const input of inputs) input.addEventListener("change", () => {
       changes++;
+      usedInputs.push(input.dataset.testid || provider);
       if (mode === "removed-existing") tiles.replaceChildren();
       for (const file of input.files) {
         uploaded.push(file);
@@ -96,7 +105,7 @@
     if (mode === "concurrent") concurrent = await prepare({ ...payload, deliveryId: "competing-operation" });
     const result = await running;
     if (mode === "concurrent") assert(concurrent.busy && !concurrent.needsReview, "same tab cannot prepare competing operations");
-    return { result, uploaded, changes, payload, capture, initialText, draft: editor().innerHTML, existingPresent: !existing || tiles.textContent.includes("personal.pdf"), count: tiles.children.length, initialCount: original.length, repeat: () => prepare({ ...payload, deadline: Date.now() + 140000 }), currentChanges: () => changes, forget: () => globalThis.__pageRelayPreparations.clear(), removeOwn: () => tiles.lastElementChild.remove() };
+    return { result, uploaded, usedInputs, changes, payload, capture, initialText, draft: editor().innerHTML, existingPresent: !existing || tiles.textContent.includes("personal.pdf"), count: tiles.children.length, initialCount: original.length, repeat: () => prepare({ ...payload, deadline: Date.now() + 140000 }), currentChanges: () => changes, forget: () => globalThis.__pageRelayPreparations.clear(), removeOwn: () => tiles.lastElementChild.remove() };
   }
   try {
     for (const includeText of [false, true]) {
@@ -105,6 +114,7 @@
       assert(value.result.prepared, mode + ": prepared (" + JSON.stringify(value.result) + ")");
       assert(value.draft === value.initialText && value.existingPresent, mode + ": existing rich text and attachments preserved");
       assert(value.uploaded.length === (includeText ? 2 : 1) && value.uploaded[0].type === "image/png" && (!includeText || value.uploaded[1].type === "text/plain"), mode + ": exactly the expected new files, no old files reuploaded");
+      if (provider === "chatgpt") assert(value.usedInputs.length === 1 && value.usedInputs[0] === "general-upload", mode + ": ChatGPT uses only the general uploader");
       assert(value.count === value.initialCount + (includeText ? 2 : 1), mode + ": attachment count rises by expected number");
       if (includeText) {
         const txt = await value.uploaded[1].text();
@@ -121,9 +131,10 @@
       assert(value.currentChanges() === count, mode + ": uncertain attempts cannot duplicate partial uploads");
       if (mode === "edit") assert(value.draft === "User edited during preparation", "user edits are never restored or overwritten");
     }
-    for (const mode of ["wrong-url", "unresolved-selection", "invalid-png", "disabled-input", "no-input", ...(provider === "gemini" ? ["consent"] : [])]) {
+    for (const mode of ["wrong-url", "unresolved-selection", "invalid-png", "disabled-input", "no-input", ...(provider === "gemini" ? ["consent"] : []), ...(provider === "chatgpt" ? ["ambiguous-general"] : [])]) {
       const value = await run(mode, includeText);
       assert(!value.result.prepared && !value.result.needsReview && !value.changes, mode + ": unsafe preflight fails before upload");
+      if (mode === "ambiguous-general") assert(value.result.error.includes("upload control is unavailable or changed"), "ambiguous general uploaders fail safely");
     }
     const recovered = await run("both", includeText);
     recovered.forget();

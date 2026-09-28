@@ -226,7 +226,10 @@ async function prepareFilesInComposer(payload) {
         inputs = [...root().querySelectorAll('input[type="file"]')];
         if (!inputs.length) inputs = [...document.querySelectorAll('input[type="file"]')].filter((node) => !node.closest("form"));
       }
-      const input = validateInput(inputs.filter((node) => accepts(node, ".png", "image/png") && (!includeText || accepts(node, ".txt", "text/plain"))));
+      // ChatGPT also exposes image-only inputs. Require TXT support even when
+      // uploading only PNG so both modes use its general attachment control.
+      const requireGeneralInput = provider === "chatgpt" || includeText;
+      const input = validateInput(inputs.filter((node) => accepts(node, ".png", "image/png") && (!requireGeneralInput || accepts(node, ".txt", "text/plain"))));
       upload(input, includeText ? [png, txt] : [png]);
     }
     const prepared = () => filesReady() && tiles().length === initial.length + expectedNames.length;
