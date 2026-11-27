@@ -31,6 +31,10 @@ jobs:
         id: meta
         run: |
           version=$(node -p 'require("./manifest.json").version')
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then
+            echo "Invalid manifest.json version: $version" >&2
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             expected="v$version"
@@ -40,12 +44,65 @@ jobs:
             fi
           fi
 
-      - name: Check syntax and manifest integrity
+      - name: Check syntax, manifest, and runtime file integrity
         run: |
           for file in *.js tests/*.js tests/*.cjs; do
             node --check "$file"
           done
           bash -n scripts/package.sh
+          node - <<'EOF'
+          const assert = require("node:assert/strict");
+          const fs = require("node:fs");
+
+          const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          assert.equal(manifest.manifest_version, 3, "manifest_version must be 3");
+          assert.match(manifest.version, /^[0-9]+(?:\.[0-9]+){0,3}$/, "invalid Chrome version");
+          assert.deepEqual(manifest.permissions, [
+            "activeTab",
+            "scripting",
+            "sidePanel",
+            "storage",
+            "tabs",
+          ]);
+          assert.ok(
+            !manifest.host_permissions.includes("<all_urls>"),
+            "must not request <all_urls>",
+          );
+
+          const required = new Set([
+            "manifest.json",
+            manifest.background.service_worker,
+            manifest.side_panel.default_path,
+            ...Object.values(manifest.icons),
+            ...Object.values(manifest.action.default_icon),
+          ]);
+
+          const html = fs.readFileSync(manifest.side_panel.default_path, "utf8");
+          for (const match of html.matchAll(/<script\s+src="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+          for (const match of html.matchAll(/<link\s+[^>]*href="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+
+          const panelJs = fs.readFileSync("panel.js", "utf8");
+          const injectMatch = panelJs.match(/files:\s*\[([^\]]+)\]/);
+          assert.ok(injectMatch, "expected injected capture script list in panel.js");
+          for (const item of injectMatch[1].matchAll(/"([^"]+)"/g)) {
+            required.add(item[1]);
+          }
+
+          const packageScript = fs.readFileSync("scripts/package.sh", "utf8");
+          for (const file of required) {
+            assert.ok(fs.existsSync(file), `missing runtime file: ${file}`);
+            assert.ok(
+              packageScript.includes(file),
+              `runtime file missing from scripts/package.sh: ${file}`,
+            );
+          }
+
+          console.log(`PASS manifest v${manifest.version} and ${required.size} runtime files verified`);
+          EOF
 
       - name: Run unit tests
         run: node --test tests/*.test.cjs
@@ -80,16 +137,19 @@ jobs:
           node-version: 24
 
       - name: Build and validate Chrome Web Store ZIP
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
         run: |
           zip_name=$(bash scripts/package.sh)
-          expected="pagerelay-${{ needs.validate.outputs.version }}.zip"
+          expected="pagerelay-$VERSION.zip"
           if [[ "$zip_name" != "$expected" ]]; then
             echo "Unexpected archive name: $zip_name (expected $expected)" >&2
             exit 1
           fi
           unzip -l "$zip_name"
-          node - "$zip_name" "${{ needs.validate.outputs.version }}" <<'EOF'
+          node - "$zip_name" "$VERSION" <<'EOF'
           const assert = require("node:assert/strict");
+          const fs = require("node:fs");
           const { execFileSync } = require("node:child_process");
 
           const [zipName, expectedVersion] = process.argv.slice(2);
@@ -98,8 +158,37 @@ jobs:
             .split("\n")
             .filter(Boolean);
 
+          const manifest = JSON.parse(
+            execFileSync("unzip", ["-p", zipName, "manifest.json"], { encoding: "utf8" }),
+          );
+          assert.equal(manifest.version, expectedVersion);
+
+          const required = new Set([
+            "manifest.json",
+            manifest.background.service_worker,
+            manifest.side_panel.default_path,
+            ...Object.values(manifest.icons),
+            ...Object.values(manifest.action.default_icon),
+          ]);
+          const html = fs.readFileSync(manifest.side_panel.default_path, "utf8");
+          for (const match of html.matchAll(/<script\s+src="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+          for (const match of html.matchAll(/<link\s+[^>]*href="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+          const panelJs = fs.readFileSync("panel.js", "utf8");
+          const injectMatch = panelJs.match(/files:\s*\[([^\]]+)\]/);
+          assert.ok(injectMatch, "expected injected capture script list in panel.js");
+          for (const item of injectMatch[1].matchAll(/"([^"]+)"/g)) {
+            required.add(item[1]);
+          }
+
           assert.ok(entries.includes("manifest.json"), "manifest.json must be at ZIP root");
           assert.ok(!entries.some((e) => e.startsWith("release/")), "ZIP must not wrap files in release/");
+          for (const file of required) {
+            assert.ok(entries.includes(file), `missing required runtime file in ZIP: ${file}`);
+          }
           for (const forbidden of [
             /^tests\//,
             /^scripts\//,
@@ -116,10 +205,6 @@ jobs:
             );
           }
 
-          const manifest = JSON.parse(
-            execFileSync("unzip", ["-p", zipName, "manifest.json"], { encoding: "utf8" }),
-          );
-          assert.equal(manifest.version, expectedVersion);
           console.log(`PASS ${zipName} validated (${entries.length} files, v${manifest.version})`);
           EOF
           sha256sum "$zip_name" > "$zip_name.sha256"
@@ -135,7 +220,7 @@ jobs:
 
   github-release:
     needs: [validate, package]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -144,14 +229,25 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: pagerelay-${{ needs.validate.outputs.version }}
+          path: dist
+
+      - name: Verify downloaded release artifacts
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        working-directory: dist
+        run: sha256sum -c "pagerelay-$VERSION.zip.sha256"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        working-directory: dist
         run: |
-          version="${{ needs.validate.outputs.version }}"
           gh release create "$GITHUB_REF_NAME" \
-            "pagerelay-$version.zip" \
-            "pagerelay-$version.zip.sha256" \
-            --title "Page Relay v$version" \
+            "pagerelay-$VERSION.zip" \
+            "pagerelay-$VERSION.zip.sha256" \
+            --repo "$GH_REPO" \
+            --verify-tag \
+            --title "Page Relay v$VERSION" \
             --generate-notes
