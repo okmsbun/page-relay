@@ -31,12 +31,14 @@ code.
 
 ## When content leaves your device
 
-Only when you explicitly click **Add to N chats**, and only for the conversations
-you selected:
+Only when you explicitly click the Add button (**Add screenshot**, **Add page
+text**, **Add screenshot and text**, or **Add to N chats**), and only for the
+conversations you selected:
 
 - Page Relay places the PNG screenshot into that chat's composer through the
   signed-in page you already have open. If **Include page text** is on, it also
-  attaches a `.txt` file with the extracted page text and metadata header.
+  attaches a `.txt` file with the extracted page text and metadata header—or
+  only the `.txt` file if you already added the screenshot for that capture.
   This is the same mechanism as attaching files yourself. The toggle starts off
   for each new capture; text is still collected and kept in panel memory while
   capturing, even when the toggle is off. With the toggle off, extracted text is
@@ -57,10 +59,11 @@ your browser and are discarded when the panel closes.
   browser, discards them.
 - Each destination tab retains operation IDs/results in isolated-world memory to
   prevent repeated or partial uploads; these disappear when that document unloads.
-- `chrome.storage.session` is used for one small record: the id, window id and
-  URL of the tab you clicked the Page Relay icon on, plus a timestamp, so the panel
-  knows which page to capture. This is session-only storage; it is not written to
-  disk by the extension and it is discarded when the browser session ends.
+- `chrome.storage.session` is used for one small record: the id, window id, URL,
+  title and timestamp of the tab you clicked the Page Relay icon on, so the
+  panel knows which page to capture. This is session-only storage; it is not
+  written to disk by the extension and it is discarded when the browser session
+  ends.
 - The extension does not use `chrome.storage.local`, `chrome.storage.sync`,
   cookies, the clipboard, downloads, or the debugger, and it writes no files.
 - Incognito tabs are only used if you enable "Allow in Incognito" for Page Relay;
@@ -74,7 +77,7 @@ your browser and are discarded when the panel closes.
 | `scripting` | Inject the capture/text scripts into the tab being captured. |
 | `sidePanel` | Show the Page Relay interface in Chrome's side panel. |
 | `storage` | Keep the pinned capture source tab in session storage between the toolbar click and the panel loading. |
-| `tabs` | Identify the capture source tab and list open AI conversations across windows; also distinguish a genuinely protected page from a failed lookup. |
+| `tabs` | Identify the capture source tab, track active tab switches for **Capture this tab** and interruption safety, list open AI conversations across windows, and distinguish genuinely protected pages from missing permissions. |
 | ChatGPT, Claude and Gemini host access | Prepare the PNG and optional TXT in only the supported AI chats you select, including open background tabs. |
 
 ## Not done by Page Relay

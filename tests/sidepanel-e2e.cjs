@@ -18,15 +18,9 @@
 //      CHROME_BIN=/path/to/chrome node tests/sidepanel-e2e.cjs
 //      NORMAL_URL=... ADMOB_URL=... AI_URL=... node tests/sidepanel-e2e.cjs
 //      HEADLESS=1 node tests/sidepanel-e2e.cjs
-const { spawn } = require("node:child_process");
-const { mkdtempSync, rmSync } = require("node:fs");
-const { tmpdir } = require("node:os");
 const path = require("node:path");
-const net = require("node:net");
+const { launchChrome } = require("./chrome-cdp.cjs");
 
-const CHROME =
-  process.env.CHROME_BIN ||
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const EXTENSION = path.join(__dirname, "..");
 const NORMAL_URL = process.env.NORMAL_URL || "https://github.com/";
 const ADMOB_URL = process.env.ADMOB_URL || "https://apps.admob.com/v2/home";
@@ -58,46 +52,12 @@ const PANEL_STATE = `(() => {
   };
 })()`;
 
-function freePort() {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-  });
-}
-
 class CDP {
-  constructor(ws) {
-    this.ws = ws;
-    this.next = 0;
-    this.pending = new Map();
-    ws.addEventListener("message", (event) =>
-      this.onMessage(JSON.parse(event.data)),
-    );
-  }
-  onMessage(message) {
-    if (!message.id || !this.pending.has(message.id)) return;
-    const { resolve, reject } = this.pending.get(message.id);
-    this.pending.delete(message.id);
-    message.error
-      ? reject(new Error(message.error.message))
-      : resolve(message.result);
+  constructor(call) {
+    this._call = call;
   }
   send(method, params = {}, sessionId) {
-    const id = ++this.next;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(
-        JSON.stringify({
-          id,
-          method,
-          params,
-          ...(sessionId ? { sessionId } : {}),
-        }),
-      );
-    });
+    return this._call(method, params, sessionId, 30000);
   }
   async evaluate(sessionId, expression) {
     const result = await this.send(
@@ -142,53 +102,31 @@ async function launch(url, {
   windowSize = "1400,1000",
   extensionPath = EXTENSION,
 } = {}) {
-  const profile = mkdtempSync(path.join(tmpdir(), "capture-e2e-"));
-  const port = await freePort();
-  const child = spawn(
-    CHROME,
-    [
-      ...(headless ? ["--headless=new", "--disable-gpu"] : []),
-      ...(deviceScaleFactor ? [`--force-device-scale-factor=${deviceScaleFactor}`] : []),
-      `--user-data-dir=${profile}`,
-      `--remote-debugging-port=${port}`,
-      "--remote-allow-origins=*",
-      "--enable-unsafe-extension-debugging",
-      "--no-first-run",
-      "--no-default-browser-check",
-      `--window-size=${windowSize}`,
-      "--window-position=0,0",
-      url,
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  child.stderr.on("data", () => {});
-  let version;
-  for (let i = 0; i < 100 && !version; i++) {
-    try {
-      version = await (
-        await fetch(`http://127.0.0.1:${port}/json/version`)
-      ).json();
-    } catch {
-      await sleep(300);
-    }
-  }
-  if (!version) throw new Error("Chrome did not expose a debugging endpoint");
-  const ws = new WebSocket(version.webSocketDebuggerUrl);
-  await new Promise((resolve, reject) => {
-    ws.addEventListener("open", resolve, { once: true });
-    ws.addEventListener("error", reject, { once: true });
+  const browser = await launchChrome({
+    prefix: "capture-e2e-",
+    headless,
+    allowFileAccess: false,
+    disableExtensions: false,
+    enableUnsafeExtensionDebugging: true,
+    deviceScaleFactor,
+    windowSize,
+    windowPosition: "0,0",
+    url,
   });
-  const cdp = new CDP(ws);
-  const { id } = await cdp.send("Extensions.loadUnpacked", { path: extensionPath });
-  return {
-    cdp,
-    browser: version.Browser,
-    extensionId: id,
-    close: () => {
-      child.kill();
-      setTimeout(() => rmSync(profile, { recursive: true, force: true }), 500);
-    },
-  };
+  try {
+    const cdp = new CDP(browser.call);
+    const version = await cdp.send("Browser.getVersion");
+    const { id } = await cdp.send("Extensions.loadUnpacked", { path: extensionPath });
+    return {
+      cdp,
+      browser: version.product,
+      extensionId: id,
+      close: () => browser.close(),
+    };
+  } catch (error) {
+    await browser.close();
+    throw error;
+  }
 }
 
 async function main() {
@@ -408,18 +346,42 @@ async function main() {
       `${switched.at(-1).state} · ${switched.at(-1).meta}`,
     );
 
-    // 2. Google AdMob must capture too (it redirects to a Google sign-in page).
+    // 2. Switching to a new ungranted tab -> clicking Capture this tab shows calm
+    // Page access required while preserving the previous capture, and clicking the
+    // real toolbar icon recovers automatically without closing/reopening the panel.
     await activate(ADMOB_URL, { expectSite: false });
+    await sleep(800);
+    await cdp.evaluate(
+      normal.session,
+      'document.getElementById("captureActiveTab")?.click()',
+    );
+    const permState = await waitFor(
+      "permission state after Capture this tab",
+      async () => {
+        const st = await cdp.evaluate(normal.session, PANEL_STATE);
+        return st.state === "permission" ? st : null;
+      },
+      15000,
+    );
+    check(
+      permState.state === "permission" &&
+        permState.title === "Page access required" &&
+        permState.showing &&
+        permState.preview === beforeSwitch.preview,
+      "Capture this tab on an ungranted tab shows Page access required and preserves previous capture",
+      `${permState.title}: ${permState.hint}`,
+    );
     const admob = await captureViaAction("admob");
     check(
       admob.settled.state === "success" &&
         admob.settled.showing &&
         admob.settled.meta !== beforeSwitch.meta,
-      `${ADMOB_URL} captured through the native Side Panel`,
+      `${ADMOB_URL} recovered automatically via toolbar click without reopening the Side Panel`,
       `${admob.settled.meta} · source ${admob.pin.url}`,
     );
 
-    // 3. A genuinely restricted page must show the calm restricted-page state.
+    // 3. A genuinely restricted page must show the calm restricted-page state while
+    // preserving the previous valid capture until a new capture succeeds.
     await activate(PROTECTED_URL);
     const blocked = await captureViaAction("chrome-extensions");
     check(
@@ -430,9 +392,9 @@ async function main() {
       `${blocked.settled.title}: ${blocked.settled.detail.slice(0, 80)}`,
     );
     check(
-      !blocked.settled.showing && blocked.settled.previewCardHidden,
-      "a restricted page hides failed preview placeholders and exposes no stale capture",
-      `previewCardHidden=${blocked.settled.previewCardHidden}`,
+      blocked.settled.showing && /preserved/.test(blocked.settled.hint),
+      "clicking toolbar on a restricted page preserves the previous valid capture in-place",
+      `hint=${blocked.settled.hint}`,
     );
 
     // A normal page must capture again afterwards, not keep the protected-page error.
@@ -444,7 +406,7 @@ async function main() {
       recovered.settled.meta,
     );
   } finally {
-    close();
+    await close();
   }
   const failed = results.filter((ok) => !ok).length;
   console.log(

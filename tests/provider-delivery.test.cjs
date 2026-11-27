@@ -315,6 +315,19 @@ test("all adapters keep one delivery identity while page text is toggled, never 
   await vm.runInContext("prepareInChatGPT", context)({ id: 1 }, { ...capture, truncated: false });
   assert.equal(serial, 2);
   assert.doesNotMatch(received.at(-1).text, /truncated/);
+  // TXT-only follow-up preserves delivery identity and omits screenshot bytes.
+  await vm.runInContext("prepareInGemini", context)(
+    { id: 1, url: "destination" },
+    capture,
+    { includePng: false, includeText: true },
+  );
+  const txtOnly = received.at(-1);
+  assert.equal(txtOnly.includePng, false);
+  assert.equal(txtOnly.includeText, true);
+  assert.equal(txtOnly.screenshot, undefined);
+  assert.equal(txtOnly.png, received[0].png);
+  assert.equal(txtOnly.txt, received[0].txt);
+  assert.ok(txtOnly.text.endsWith(capture.text));
 });
 
 test("shared injected routine contains no editor mutations, focus changes, submission or key simulation", () => {

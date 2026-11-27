@@ -9,6 +9,20 @@
   const POLL_MS = 50;
   const QUIET_MS = 300;
   const SETTLE_TIMEOUT_MS = 5000;
+  const USER_SCROLL_WINDOW_MS = 600;
+  const USER_SCROLL_DELTA_PX = 2;
+  const SCROLL_KEYS = new Set([
+    "ArrowUp",
+    "ArrowDown",
+    "PageUp",
+    "PageDown",
+    "Home",
+    "End",
+    " ",
+    "Spacebar",
+  ]);
+  const USER_SCROLL_MESSAGE =
+    "The page was manually scrolled during capture. Please keep the page still while capturing to ensure a complete screenshot.";
   let captureState = null;
 
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -128,6 +142,165 @@
     return "#ffffff";
   }
 
+  function currentScrollY(state = captureState) {
+    const target = state?.target;
+    return target ? target.scrollTop : window.scrollY;
+  }
+
+  function userScrollInterruptedError(reason) {
+    const error = new Error(USER_SCROLL_MESSAGE);
+    error.code = "USER_SCROLL_INTERRUPTED";
+    error.detail = reason || "manual-scroll";
+    return error;
+  }
+
+  function isEditableTarget(node) {
+    if (!node || typeof node !== "object") return false;
+    const tag = String(node.tagName || "").toUpperCase();
+    return (
+      tag === "INPUT" ||
+      tag === "TEXTAREA" ||
+      tag === "SELECT" ||
+      Boolean(node.isContentEditable)
+    );
+  }
+
+  function isScrollbarPointer(event, target) {
+    if (!event || !Number.isFinite(event.clientX) || !Number.isFinite(event.clientY))
+      return false;
+    if (target && typeof target.getBoundingClientRect === "function") {
+      const rect = target.getBoundingClientRect();
+      const insideVerticalGutter =
+        event.clientX >= rect.left + target.clientWidth - 2 &&
+        event.clientX <= rect.right + 2 &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+      const insideHorizontalGutter =
+        event.clientY >= rect.top + target.clientHeight - 2 &&
+        event.clientY <= rect.bottom + 2 &&
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right;
+      return insideVerticalGutter || insideHorizontalGutter;
+    }
+    const rootWidth = document.documentElement?.clientWidth || innerWidth;
+    const rootHeight = document.documentElement?.clientHeight || innerHeight;
+    return event.clientX >= rootWidth - 2 || event.clientY >= rootHeight - 2;
+  }
+
+  function checkForManualScroll(state) {
+    if (!state || state.programmaticScroll) return;
+    if (state.userScrolled) return;
+    if (state.expectedScrollY === null) return;
+    const y = currentScrollY(state);
+    if (Math.abs(y - state.expectedScrollY) <= USER_SCROLL_DELTA_PX) return;
+    const now = performance.now();
+    if (state.scrollbarDragging) {
+      const originY = state.scrollbarStartY ?? state.expectedScrollY;
+      if (Math.abs(y - originY) > USER_SCROLL_DELTA_PX) {
+        state.userScrolled = true;
+        state.userScrollReason = "scrollbar";
+      }
+      return;
+    }
+    if (
+      state.lastUserScrollInput &&
+      now - state.lastUserScrollInput.time <= USER_SCROLL_WINDOW_MS &&
+      Math.abs(y - state.lastUserScrollInput.scrollY) > USER_SCROLL_DELTA_PX
+    ) {
+      state.userScrolled = true;
+      state.userScrollReason = state.lastUserScrollInput.type;
+    }
+  }
+
+  function installScrollDetection(state) {
+    if (
+      typeof window.addEventListener !== "function" &&
+      typeof document.addEventListener !== "function"
+    ) {
+      return;
+    }
+    const recordInput = (type) => {
+      if (captureState !== state) return;
+      state.lastUserScrollInput = {
+        type,
+        time: performance.now(),
+        scrollY: currentScrollY(state),
+      };
+    };
+    const onWheel = (event) => {
+      if (!event?.isTrusted) return;
+      if (Math.abs(event.deltaY || 0) >= 4 || Math.abs(event.deltaX || 0) >= 4) {
+        recordInput("wheel");
+      }
+    };
+    const onKeyDown = (event) => {
+      if (!event?.isTrusted) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (!SCROLL_KEYS.has(event.key)) return;
+      if (isEditableTarget(event.target)) return;
+      recordInput("keydown");
+    };
+    const onTouchMove = (event) => {
+      if (!event?.isTrusted) return;
+      recordInput("touchmove");
+    };
+    const onPointerDown = (event) => {
+      if (!event?.isTrusted) return;
+      if (isScrollbarPointer(event, state.target)) {
+        state.scrollbarDragging = true;
+        state.scrollbarStartY = currentScrollY(state);
+        recordInput("scrollbar");
+      }
+    };
+    const onPointerEnd = () => {
+      if (state.scrollbarDragging) {
+        state.scrollbarDragging = false;
+        state.lastUserScrollInput = {
+          type: "scrollbar",
+          time: performance.now(),
+          scrollY: state.scrollbarStartY ?? currentScrollY(state),
+        };
+        state.scrollbarStartY = null;
+      }
+    };
+    const onScroll = (event) => {
+      if (captureState !== state || state.programmaticScroll) return;
+      const scrollTarget = event?.target;
+      if (state.target) {
+        if (scrollTarget && scrollTarget !== state.target) return;
+      } else if (
+        scrollTarget &&
+        scrollTarget !== document &&
+        scrollTarget !== window &&
+        scrollTarget !== document.documentElement &&
+        scrollTarget !== document.body &&
+        scrollTarget !== document.scrollingElement
+      ) {
+        return;
+      }
+      checkForManualScroll(state);
+    };
+
+    const passiveCapture = { capture: true, passive: true };
+    const entries = [
+      [window, "wheel", onWheel, passiveCapture],
+      [window, "keydown", onKeyDown, passiveCapture],
+      [window, "touchmove", onTouchMove, passiveCapture],
+      [window, "pointerdown", onPointerDown, passiveCapture],
+      [window, "pointerup", onPointerEnd, passiveCapture],
+      [window, "pointercancel", onPointerEnd, passiveCapture],
+      [document, "scroll", onScroll, passiveCapture],
+    ];
+    for (const [emitter, type, listener, options] of entries) {
+      emitter?.addEventListener?.(type, listener, options);
+    }
+    state.cleanupListeners = () => {
+      for (const [emitter, type, listener, options] of entries) {
+        emitter?.removeEventListener?.(type, listener, options);
+      }
+    };
+  }
+
   function getMetrics() {
     const target = captureState?.target;
     const crop = target
@@ -228,12 +401,17 @@
     if (!state || captureState !== state) {
       throw new Error("Capture was cancelled.");
     }
+    checkForManualScroll(state);
+    if (state.userScrolled) {
+      throw userScrollInterruptedError(state.userScrollReason);
+    }
   }
 
   function restoreCaptureState() {
     const state = captureState;
     if (!state) return;
     captureState = null;
+    state.cleanupListeners?.();
     state.observer.disconnect();
 
     // Restore the position while scroll snap and smooth scrolling are disabled.
@@ -342,6 +520,7 @@
         "Page resources are still loading. Wait for them and try again.",
       );
     }
+    requireState(state);
     state.text.sample();
     return getMetrics();
   }
@@ -361,6 +540,13 @@
       targetX: target?.scrollLeft,
       scrollX: window.scrollX,
       scrollY: window.scrollY,
+      expectedScrollY: null,
+      programmaticScroll: false,
+      lastUserScrollInput: null,
+      scrollbarDragging: false,
+      userScrolled: false,
+      userScrollReason: null,
+      cleanupListeners: null,
       savedStyles: new Map(),
       text: new PageTextCollector(targets.map(({ element }) => element)),
       lastMutation: performance.now(),
@@ -388,21 +574,34 @@
       setTemporaryStyle(element, "overflow-anchor", "none");
     }
     // Save the app frame with every independent panel at its first row.
-    for (const { element, x } of targets) {
-      element.scrollTo({ left: x, top: 0, behavior: "instant" });
+    state.programmaticScroll = true;
+    try {
+      for (const { element, x } of targets) {
+        element.scrollTo({ left: x, top: 0, behavior: "instant" });
+      }
+    } finally {
+      state.programmaticScroll = false;
     }
+    installScrollDetection(state);
     return scrollToPosition(0);
   }
 
   async function scrollToPosition(scrollY, minimumWait) {
-    requireState(captureState);
+    const state = captureState;
+    requireState(state);
     normalizeOverlays();
-    const target = captureState.target;
-    (target || window).scrollTo({
-      left: target ? captureState.targetX : captureState.scrollX,
-      top: scrollY,
-      behavior: "instant",
-    });
+    const target = state.target;
+    state.programmaticScroll = true;
+    try {
+      (target || window).scrollTo({
+        left: target ? state.targetX : state.scrollX,
+        top: scrollY,
+        behavior: "instant",
+      });
+      state.expectedScrollY = currentScrollY(state);
+    } finally {
+      state.programmaticScroll = false;
+    }
     return settle(minimumWait);
   }
 
@@ -452,7 +651,14 @@
 
     handleMessage()
       .then((result) => sendResponse({ ok: true, result }))
-      .catch((error) => sendResponse({ ok: false, error: error.message }));
+      .catch((error) =>
+        sendResponse({
+          ok: false,
+          error: error.message,
+          ...(error.code ? { code: error.code } : {}),
+          ...(error.detail ? { detail: error.detail } : {}),
+        }),
+      );
     return true;
   });
 })();

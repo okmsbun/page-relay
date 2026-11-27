@@ -90,12 +90,21 @@
           uploaded.push(file);
           if (mode !== "async-upload") tile(file.name, file.type === "image/png");
         }
-        input.value = "";
+        if (mode !== "gemini-auto-close") input.value = "";
         if (mode === "detached-text-input" && provider === "gemini" && !detachedOnce && input.accept.includes("image")) {
           detachedOnce = true;
           fixture.querySelectorAll('images-files-uploader input[type="file"], uploader > input[accept*=".txt"]').forEach((n) => n.remove());
           const toggle = fixture.querySelector('simplified-input-menu button[aria-haspopup="menu"]');
           toggle.setAttribute("aria-expanded", "false");
+        }
+        if (mode === "gemini-auto-close" && provider === "gemini") {
+          // Simulate live Gemini's async auto-close after change (~15ms on real site;
+          // files remain on the input until Angular detaches the uploader overlay).
+          setTimeout(() => {
+            fixture.querySelectorAll("uploader").forEach((u) => u.remove());
+            const toggle = fixture.querySelector('simplified-input-menu button[aria-haspopup="menu"]');
+            toggle.setAttribute("aria-expanded", "false");
+          }, 15);
         }
         if (mode === "replace-editor") editor().replaceWith(editor().cloneNode(true));
         if (mode === "rerender-existing") original[0]?.replaceWith(original[0].cloneNode(true));
@@ -103,7 +112,7 @@
         if (mode === "extra-attachment") tile("user-added-during-upload.pdf");
         if (mode === "edit") editor().textContent = "User edited during preparation";
         if (mode === "upload-error") { const error = document.createElement("div"); error.setAttribute("role", "alert"); error.textContent = "Upload failed"; container.append(error); }
-        if (mode === "late-upload-error") setTimeout(() => { const error = document.createElement("div"); error.setAttribute("role", "alert"); error.textContent = "Late provider upload error"; container.append(error); }, 200);
+        if (mode === "late-upload-error") setTimeout(() => { const error = document.createElement("div"); error.setAttribute("role", "alert"); error.textContent = "Late provider upload error"; container.append(error); }, 2000);
         if (mode === "progress") { const progress = document.createElement("div"); progress.setAttribute("role", "progressbar"); progress.textContent = "Uploading"; container.append(progress); }
       });
     }
@@ -164,11 +173,11 @@
     if (provider === "gemini") {
       assert(menuToggle.getAttribute("aria-expanded") !== "true", mode + ": Gemini upload menu is closed after operation");
     }
-    return { result, uploaded, usedInputs, changes, payload, capture, initialText, draft: editor().innerHTML, existingPresent: !existing || tiles.textContent.includes("personal.pdf"), progressVisible: !!container.querySelector('[role="progressbar"]'), sendDisabled: fixture.querySelector("#send")?.disabled ?? true, count: tiles.children.length, initialCount: original.length, repeat: () => prepare({ ...payload, deadline: Date.now() + 140000 }), currentChanges: () => changes, forget: () => globalThis.__pageRelayPreparations.clear(), removeOwn: () => tiles.lastElementChild.remove() };
+    return { result, uploaded, usedInputs, changes, payload, capture, initialText, draft: editor().innerHTML, existingPresent: !existing || tiles.textContent.includes("personal.pdf"), progressVisible: !!container.querySelector('[role="progressbar"]'), sendDisabled: fixture.querySelector("#send")?.disabled ?? true, count: tiles.children.length, initialCount: original.length, repeat: () => prepare({ ...payload, deadline: Date.now() + 140000 }), followUpTxt: () => prepare(CapturePreparation.payload(destination, capture, { includePng: false, includeText: true })), currentChanges: () => changes, forget: () => globalThis.__pageRelayPreparations.clear(), removeOwn: () => tiles.lastElementChild.remove() };
   }
   try {
     for (const includeText of [false, true]) {
-    for (const mode of ["empty", "text", "attachment", "both", "multiple", "no-send", "replace-editor", "rerender-existing", "selected-acknowledged", "progress", "async-upload", "late-upload-error", "empty-ui", "modern", ...(provider === "gemini" ? ["gemini-mobile", "gemini-turkish", "gemini-unified", "gemini-legacy", ...(!includeText ? ["no-text-input"] : ["detached-text-input"])] : [])]) {
+    for (const mode of ["empty", "text", "attachment", "both", "multiple", "no-send", "replace-editor", "rerender-existing", "selected-acknowledged", "progress", "async-upload", "late-upload-error", "empty-ui", "modern", ...(provider === "gemini" ? ["gemini-mobile", "gemini-turkish", "gemini-unified", "gemini-legacy", "gemini-auto-close", ...(!includeText ? ["no-text-input"] : ["detached-text-input"])] : [])]) {
       const value = await run(mode, includeText, mode === "multiple");
       assert(value.result.prepared, mode + ": prepared (" + JSON.stringify(value.result) + ")");
       assert(value.draft === value.initialText && value.existingPresent, mode + ": existing rich text and attachments preserved");
@@ -184,6 +193,17 @@
       }
       const again = await value.repeat();
       assert(again.prepared && again.duplicate && value.currentChanges() === value.changes, mode + ": repeated preparation never reuploads (" + JSON.stringify(again) + ")");
+    }
+    // Independent follow-up TXT delivery after screenshot-only delivery preserves draft + PNG without resending PNG.
+    if (!includeText) {
+      const followup = await run("both", false);
+      assert(followup.result.prepared && followup.uploaded.length === 1 && followup.uploaded[0].type === "image/png", "follow-up step 1 adds PNG only");
+      const txtResult = await followup.followUpTxt();
+      assert(txtResult.prepared && !txtResult.duplicate, "follow-up step 2 adds missing TXT (" + JSON.stringify(txtResult) + ")");
+      assert(followup.uploaded.length === 2 && followup.uploaded[1].type === "text/plain", "follow-up step 2 sends only TXT without resending PNG");
+      assert(followup.draft === followup.initialText && followup.existingPresent, "follow-up step 2 preserves existing draft and attachments");
+      const txtAgain = await followup.followUpTxt();
+      assert(txtAgain.prepared && txtAgain.duplicate && followup.uploaded.length === 2, "repeated follow-up TXT never duplicates");
     }
     for (const mode of ["edit", "removed-existing", "upload-error", "changed-image", "extra-attachment"]) {
       const value = await run(mode, includeText);

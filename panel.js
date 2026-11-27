@@ -37,6 +37,9 @@ async function retryTabOperation(operation, action, beforeRetry) {
             "Chrome tabs are temporarily busy (for example while dragging a tab). Release the tab, then click Recapture.",
           );
           wrapped.transientTab = true;
+          wrapped.interrupted = true;
+          wrapped.interruptionReason = "tab-busy";
+          wrapped.expected = true;
           wrapped.diagnostic = {
             reason: "tab-strip-busy",
             operation,
@@ -61,7 +64,15 @@ async function sendToPage(tabId, message) {
     frameId: 0,
   });
   if (!response?.ok) {
-    throw new Error(response?.error || "The page did not respond.");
+    const error = new Error(response?.error || "The page did not respond.");
+    if (response?.code) error.code = response.code;
+    if (response?.detail) error.detail = response.detail;
+    if (response?.code === "USER_SCROLL_INTERRUPTED") {
+      error.interrupted = true;
+      error.interruptionReason = "manual-scroll";
+      error.expected = true;
+    }
+    throw error;
   }
   return response.result;
 }
@@ -169,6 +180,14 @@ function layoutChangedError(
   return error;
 }
 
+function captureInterruptedError(reason, message) {
+  const error = new Error(message);
+  error.interrupted = true;
+  error.interruptionReason = reason;
+  error.expected = true;
+  return error;
+}
+
 function checkCanvasSize(width, height) {
   if (
     height > MAX_CANVAS_SIDE ||
@@ -239,12 +258,33 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     }
 
     async function requireActiveSourceTab() {
+      if (session.tabClosed) {
+        throw captureInterruptedError(
+          "tab-closed",
+          "The source tab was closed before the capture finished.",
+        );
+      }
+      if (session.tabNavigated) {
+        throw captureInterruptedError(
+          "tab-navigated",
+          "The page navigated or reloaded before the capture finished.",
+        );
+      }
+      if (session.tabSwitched) {
+        throw captureInterruptedError(
+          "tab-switch",
+          "The active tab changed during capture. Keep the source tab active until capture finishes.",
+        );
+      }
       const [activeTab] = await chrome.tabs.query({
         active: true,
         windowId: tab.windowId,
       });
       if (activeTab?.id !== tab.id)
-        throw new Error("Keep the captured tab active.");
+        throw captureInterruptedError(
+          "tab-switch",
+          "Keep the captured tab active.",
+        );
     }
     await requireActiveSourceTab();
     const dataUrl = await retryTabOperation(
@@ -257,9 +297,10 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       active: true,
       windowId: tab.windowId,
     });
-    if (activeAfterCapture?.id !== tab.id) {
+    if (session.tabSwitched || activeAfterCapture?.id !== tab.id) {
       // A Side Panel stays open on tab switches. Never stitch another tab's pixels.
-      throw new Error(
+      throw captureInterruptedError(
+        "tab-switch",
         "The active tab changed during capture. Keep the source tab active until capture finishes.",
       );
     }
@@ -305,15 +346,19 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     const cropY = Math.round(before.crop.y * pixelY);
     const cropRight = before.crop.x + before.crop.width;
     const cropBottom = before.crop.y + before.crop.height;
-    const cropWidth = (cropRight === before.windowWidth ? image.width :
-      Math.min(image.width, Math.round(cropRight * pixelX))) - cropX;
-    const cropHeight = (cropBottom === before.windowHeight ? image.height :
-      Math.min(image.height, Math.round(cropBottom * pixelY))) - cropY;
+    const cropWidth =
+      (cropRight === before.windowWidth
+        ? image.width
+        : Math.min(image.width, Math.round(cropRight * pixelX))) - cropX;
+    const cropHeight =
+      (cropBottom === before.windowHeight
+        ? image.height
+        : Math.min(image.height, Math.round(cropBottom * pixelY))) - cropY;
     if (cropWidth <= 0 || cropHeight <= 0)
       throw new Error("The scrolling area is not visible.");
 
     if (!context) {
-      scaleY = pixelY * before.crop.height / before.viewportHeight;
+      scaleY = (pixelY * before.crop.height) / before.viewportHeight;
       capturedCropHeight = cropHeight;
       const height = Math.round(before.documentHeight * scaleY);
       checkCanvasSize(cropWidth, height);
@@ -349,8 +394,9 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
         before.scrollY + before.viewportHeight - before.documentHeight,
       ) <= 1;
     const atEnd = requestedEnd && atBottom;
-    const height = atEnd ? segmentTop + cropHeight :
-      Math.round(before.documentHeight * scaleY);
+    const height = atEnd
+      ? segmentTop + cropHeight
+      : Math.round(before.documentHeight * scaleY);
     if (height < coveredPixels) {
       throw layoutChangedError(
         "The page layout changed during capture. Wait for it to settle and retry.",
@@ -407,17 +453,18 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     }
     const sourceY = coveredPixels - segmentTop;
     const rows = segmentBottom - coveredPixels;
-    if (rows > 0) context.drawImage(
-      image,
-      cropX,
-      cropY + sourceY,
-      cropWidth,
-      rows,
-      0,
-      coveredPixels,
-      canvas.width,
-      rows,
-    );
+    if (rows > 0)
+      context.drawImage(
+        image,
+        cropX,
+        cropY + sourceY,
+        cropWidth,
+        rows,
+        0,
+        coveredPixels,
+        canvas.width,
+        rows,
+      );
     coveredPixels = Math.max(coveredPixels, segmentBottom);
 
     if ((atEnd || doneAtShrunkBottom) && coveredPixels === canvas.height) {
@@ -444,14 +491,73 @@ async function captureFullPage(tab) {
     name: "fullPageCapture",
     frameId: 0,
   });
+  let tabSwitched = false;
+  let tabClosed = false;
+  let tabNavigated = false;
+  const onCaptureTabActivated = (activeInfo) => {
+    if (activeInfo.windowId === tab.windowId && activeInfo.tabId !== tab.id) {
+      tabSwitched = true;
+    }
+  };
+  const onCaptureTabRemoved = (removedTabId) => {
+    if (removedTabId === tab.id) tabClosed = true;
+  };
+  const stripHash = (rawUrl) => String(rawUrl || "").split("#")[0];
+  const initialBaseUrl = stripHash(tab.url);
+  const onCaptureTabUpdated = (updatedTabId, changeInfo) => {
+    if (updatedTabId !== tab.id) return;
+    if (changeInfo?.status === "loading") {
+      tabNavigated = true;
+      return;
+    }
+    if (changeInfo?.url && stripHash(changeInfo.url) !== initialBaseUrl) {
+      tabNavigated = true;
+    }
+  };
+  chrome.tabs.onActivated?.addListener?.(onCaptureTabActivated);
+  chrome.tabs.onRemoved?.addListener?.(onCaptureTabRemoved);
+  chrome.tabs.onUpdated?.addListener?.(onCaptureTabUpdated);
+  const checkTabState = () => {
+    if (tabClosed) {
+      throw captureInterruptedError(
+        "tab-closed",
+        "The source tab was closed before the capture finished.",
+      );
+    }
+    if (tabNavigated) {
+      throw captureInterruptedError(
+        "tab-navigated",
+        "The page navigated or reloaded before the capture finished.",
+      );
+    }
+    if (tabSwitched) {
+      throw captureInterruptedError(
+        "tab-switch",
+        "The active tab changed during capture. Keep the source tab active until capture finishes.",
+      );
+    }
+  };
   try {
     for (let attempt = 0; attempt <= MAX_LAYOUT_RETRIES; attempt++) {
-      const session = { captures: 0 };
+      const session = {
+        captures: 0,
+        get tabSwitched() {
+          return tabSwitched;
+        },
+        get tabClosed() {
+          return tabClosed;
+        },
+        get tabNavigated() {
+          return tabNavigated;
+        },
+      };
       const panels = [];
       try {
+        checkTabState();
         const initial = await sendToPage(tab.id, {
           type: "fullPageCapture:start",
         });
+        checkTabState();
         let pixels = 0;
         for (
           let index = 0;
@@ -491,7 +597,9 @@ async function captureFullPage(tab) {
               "The combined scrolling areas are too large to capture safely.",
             );
         }
-        document.getElementById("statusTitle").textContent = "Finishing capture…";
+        checkTabState();
+        document.getElementById("statusTitle").textContent =
+          "Finishing capture…";
         const resultCanvas = initial.regions?.length
           ? composeApplicationScreenshot(session.shell, panels, initial)
           : panels[0].canvas;
@@ -508,7 +616,31 @@ async function captureFullPage(tab) {
             resultCanvas.width = resultCanvas.height = 0;
         }
       } catch (error) {
-        if (!error?.layoutChanged || attempt >= MAX_LAYOUT_RETRIES) {
+        if (!error?.interrupted) {
+          if (tabClosed) {
+            throw captureInterruptedError(
+              "tab-closed",
+              "The source tab was closed before the capture finished.",
+            );
+          }
+          if (tabNavigated) {
+            throw captureInterruptedError(
+              "tab-navigated",
+              "The page navigated or reloaded before the capture finished.",
+            );
+          }
+          if (tabSwitched) {
+            throw captureInterruptedError(
+              "tab-switch",
+              "The active tab changed during capture. Keep the source tab active until capture finishes.",
+            );
+          }
+        }
+        if (
+          error?.interrupted ||
+          !error?.layoutChanged ||
+          attempt >= MAX_LAYOUT_RETRIES
+        ) {
           if (error?.diagnostic) {
             error.diagnostic = { ...error.diagnostic, attempt: attempt + 1 };
           }
@@ -540,8 +672,17 @@ async function captureFullPage(tab) {
       }
     }
   } finally {
+    chrome.tabs.onActivated?.removeListener?.(onCaptureTabActivated);
+    chrome.tabs.onRemoved?.removeListener?.(onCaptureTabRemoved);
+    chrome.tabs.onUpdated?.removeListener?.(onCaptureTabUpdated);
     try {
-      await sendToPage(tab.id, { type: "fullPageCapture:restore" });
+      if (!tabClosed) {
+        await sendToPage(tab.id, { type: "fullPageCapture:restore" }).catch(
+          (restoreError) => {
+            if (!tabNavigated) throw restoreError;
+          },
+        );
+      }
     } finally {
       port.disconnect();
     }
@@ -566,7 +707,7 @@ function showProgress(region, total, fraction, section) {
   document.getElementById("statusTitle").textContent =
     total > 1 ? `Capturing area ${region + 1} of ${total}` : "Capturing…";
   document.getElementById("statusDetail").textContent =
-    `Section ${section} · Keep the source tab active until capture finishes.`;
+    `Section ${section} · Please avoid scrolling while Page Relay captures the page.`;
   document.getElementById("progressFill").style.width = `${progressValue}%`;
   document
     .getElementById("captureProgress")
@@ -583,9 +724,13 @@ function setStatus(state, title, detail, hint = "") {
   const glyph =
     state === "restricted"
       ? "M10 2.75l5.75 2.4v4.6c0 3.7-2.45 6.85-5.75 7.75-3.3-.9-5.75-4.05-5.75-7.75v-4.6L10 2.75z"
-      : state === "error"
-        ? "M10 4v7m0 4v.1"
-        : "M5 10l3 3 7-7";
+      : state === "interrupted"
+        ? "M7.25 5.5v9M12.75 5.5v9"
+        : state === "permission"
+          ? "M10 6.25v4.5M10 13.75v.1M10 2.75a7.25 7.25 0 1 1 0 14.5 7.25 7.25 0 0 1 0-14.5z"
+          : state === "error"
+            ? "M10 4v7m0 4v.1"
+            : "M5 10l3 3 7-7";
   document.getElementById("statusGlyph").setAttribute("d", glyph);
 }
 
@@ -606,6 +751,23 @@ const RESTRICTED_PAGE_HINT =
 const UNSUPPORTED_PAGE_TITLE = "Unsupported page";
 const UNSUPPORTED_PAGE_MESSAGE =
   "Full-page capture is unavailable on this type of page.";
+const INTERRUPTED_PAGE_TITLE = "Capture interrupted";
+const INTERRUPTED_PAGE_MESSAGE =
+  "The page was manually scrolled during capture. Please keep the page still while capturing to ensure a complete screenshot.";
+const INTERRUPTED_TAB_SWITCH_MESSAGE =
+  "You switched tabs before the capture finished. Keep the source tab active during capture.";
+const INTERRUPTED_TAB_BUSY_MESSAGE =
+  "Chrome tabs were busy during capture (for example while dragging a tab). Release the tab and click Recapture to try again.";
+const INTERRUPTED_TAB_NAVIGATED_MESSAGE =
+  "The page navigated or reloaded before the capture finished. Click Recapture once it finishes loading.";
+const INTERRUPTED_TAB_CLOSED_MESSAGE =
+  "The source tab was closed before the capture finished.";
+const PERMISSION_PAGE_TITLE = "Page access required";
+const PERMISSION_PAGE_MESSAGE =
+  "Click the Page Relay icon in Chrome’s toolbar to capture this tab.";
+const PERMISSION_PRESERVED_HINT = "Your previous capture is preserved.";
+const PERMISSION_NO_CAPTURE_HINT =
+  "No need to close the Side Panel — capture will start automatically.";
 
 function isProtectedPageUrl(url) {
   return (
@@ -616,6 +778,15 @@ function isProtectedPageUrl(url) {
 
 function isUnsupportedPageUrl(url) {
   return typeof url === "string" && UNSUPPORTED_PAGE_URL.test(url);
+}
+
+function isCapturablePageUrl(url) {
+  return (
+    typeof url === "string" &&
+    url.length > 0 &&
+    !isProtectedPageUrl(url) &&
+    !isUnsupportedPageUrl(url)
+  );
 }
 
 function protectedPageError() {
@@ -651,9 +822,46 @@ function isUnsupportedError(error) {
   return Boolean(error?.unsupportedPage);
 }
 
+function isManualScrollInterruption(error) {
+  return Boolean(
+    error?.interrupted && error?.interruptionReason === "manual-scroll",
+  );
+}
+
+function isUserInterruption(error) {
+  if (error?.interrupted) return true;
+  const message = String(error?.message ?? error ?? "");
+  return /active tab changed|keep the captured tab active|capture was cancelled/i.test(
+    message,
+  );
+}
+
+function interruptionMessage(error) {
+  switch (error?.interruptionReason) {
+    case "manual-scroll":
+      return INTERRUPTED_PAGE_MESSAGE;
+    case "tab-switch":
+      return INTERRUPTED_TAB_SWITCH_MESSAGE;
+    case "tab-busy":
+      return INTERRUPTED_TAB_BUSY_MESSAGE;
+    case "tab-navigated":
+      return INTERRUPTED_TAB_NAVIGATED_MESSAGE;
+    case "tab-closed":
+      return INTERRUPTED_TAB_CLOSED_MESSAGE;
+    default: {
+      const message = String(error?.message ?? error ?? "");
+      if (/active tab changed|keep the captured tab active/i.test(message)) {
+        return INTERRUPTED_TAB_SWITCH_MESSAGE;
+      }
+      return INTERRUPTED_PAGE_MESSAGE;
+    }
+  }
+}
+
 function isExpectedCaptureError(error) {
   if (
     error?.expected ||
+    isUserInterruption(error) ||
     isProtectedError(error) ||
     isUnsupportedError(error) ||
     isPermissionError(error)
@@ -667,11 +875,13 @@ function isExpectedCaptureError(error) {
 
 function friendlyError(error) {
   const message = String(error?.message ?? error ?? "");
+  if (isUserInterruption(error)) return interruptionMessage(error);
   if (isProtectedError(error)) return RESTRICTED_PAGE_MESSAGE;
   if (isUnsupportedError(error)) return UNSUPPORTED_PAGE_MESSAGE;
   if (isPermissionError(error))
     return "Chrome blocked access to this page’s content, so nothing was captured.";
-  const base = message || "Something interrupted the capture. Please try again.";
+  const base =
+    message || "Something interrupted the capture. Please try again.";
   const summary = error?.diagnostic?.diffs?.slice(0, 2).join(", ");
   return summary ? `${base} (${summary})` : base;
 }
@@ -694,28 +904,265 @@ document.getElementById("zoomPreview").addEventListener("click", (event) => {
 });
 
 const recaptureButton = document.getElementById("recapturePage");
+const sourceBar = document.getElementById("sourceBar");
+const sourcePageLabel = document.getElementById("sourcePage");
+const activeTabRow = document.getElementById("activeTabRow");
+const activeTabLabel = document.getElementById("activeTabLabel");
+const activeTabStatus = document.getElementById("activeTabStatus");
+const captureActiveTabButton = document.getElementById("captureActiveTab");
+const statusActions = document.getElementById("statusActions");
+const statusRecaptureButton = document.getElementById("statusRecapture");
+const statusCaptureTabButton = document.getElementById("statusCaptureTab");
 
 let captureStarted = false;
 let capturing = false;
 let captureSourceTab = null;
+let currentActiveTab = null;
+let permissionDeniedTab = null;
+let panelWindowId = null;
 let canRetrySource = false;
 
 function isDestinationBusy() {
-  return typeof destinationUI !== "undefined" && destinationUI.isBusy?.() === true;
+  return (
+    typeof destinationUI !== "undefined" && destinationUI.isBusy?.() === true
+  );
+}
+
+function formatTabLabel(tab) {
+  if (!tab) return "";
+  const title = String(tab.title || "").trim();
+  try {
+    const parsed = new URL(tab.url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host) return title ? `${host} · ${title}` : host;
+  } catch {
+    /* non-standard URL */
+  }
+  return title || tab.url || "";
+}
+
+function formatTabHost(tab) {
+  if (!tab?.url) return String(tab?.title || "").trim() || "this tab";
+  try {
+    const parsed = new URL(tab.url);
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host) return host;
+  } catch {
+    /* fallback below */
+  }
+  return String(tab.title || "").trim() || tab.url;
+}
+
+function isPermissionDeniedForTab(tab) {
+  return Boolean(
+    permissionDeniedTab &&
+      tab &&
+      permissionDeniedTab.id === tab.id &&
+      permissionDeniedTab.url === tab.url,
+  );
+}
+
+function isDifferentFromCapturedSource(tab) {
+  if (!tab || !captureSourceTab) return false;
+  return tab.id !== captureSourceTab.id || tab.url !== captureSourceTab.url;
+}
+
+function canOfferCaptureActiveTab() {
+  if (!currentActiveTab || !isCapturablePageUrl(currentActiveTab.url))
+    return false;
+  if (isPermissionDeniedForTab(currentActiveTab)) return false;
+  if (capturedPage) {
+    return isDifferentFromCapturedSource(currentActiveTab);
+  }
+  const state = document.body?.dataset?.state;
+  if (state === "restricted") return true;
+  if (["error", "interrupted", "permission"].includes(state)) {
+    return (
+      !captureSourceTab ||
+      currentActiveTab.id !== captureSourceTab.id ||
+      currentActiveTab.url !== captureSourceTab.url
+    );
+  }
+  return false;
+}
+
+function updateCaptureControls() {
+  const busy = capturing || isDestinationBusy();
+  const canRecapture = Boolean(
+    captureSourceTab && (capturedPage || canRetrySource),
+  );
+  if (recaptureButton) {
+    recaptureButton.hidden = !canRecapture;
+    recaptureButton.disabled = !canRecapture || busy;
+    recaptureButton.title = captureSourceTab
+      ? `Return to ${formatTabHost(captureSourceTab)} and capture it again`
+      : "Capture the source page again";
+    if (capturing) recaptureButton.dataset.capturing = "true";
+    else delete recaptureButton.dataset.capturing;
+  }
+
+  const offerActiveTab = !capturing && canOfferCaptureActiveTab();
+  const state = document.body?.dataset?.state;
+
+  if (sourceBar) {
+    const showSourceBar = Boolean(
+      capturedPage && captureSourceTab && !capturing,
+    );
+    sourceBar.hidden = !showSourceBar;
+    if (showSourceBar && sourcePageLabel) {
+      const label = formatTabLabel(captureSourceTab);
+      sourcePageLabel.textContent = label || "Current capture";
+      sourcePageLabel.title = [captureSourceTab.title, captureSourceTab.url]
+        .filter(Boolean)
+        .join(" — ");
+    }
+    const showActiveRow =
+      showSourceBar &&
+      Boolean(currentActiveTab) &&
+      isDifferentFromCapturedSource(currentActiveTab);
+    if (activeTabRow) {
+      activeTabRow.hidden = !showActiveRow;
+    }
+    if (showActiveRow && activeTabLabel) {
+      activeTabLabel.textContent =
+        formatTabLabel(currentActiveTab) || "Active tab";
+      activeTabLabel.title = [currentActiveTab.title, currentActiveTab.url]
+        .filter(Boolean)
+        .join(" — ");
+    }
+    if (captureActiveTabButton) {
+      const showBarAction = showActiveRow && offerActiveTab;
+      captureActiveTabButton.hidden = !showBarAction;
+      captureActiveTabButton.disabled = !showBarAction || busy;
+      if (showBarAction) {
+        captureActiveTabButton.title = `Switch capture source to ${formatTabHost(currentActiveTab)}`;
+      }
+    }
+    if (activeTabStatus) {
+      const statusText = !showActiveRow || offerActiveTab
+        ? ""
+        : isPermissionDeniedForTab(currentActiveTab)
+          ? "Toolbar click needed"
+          : isProtectedPageUrl(currentActiveTab?.url)
+            ? "Restricted"
+            : isUnsupportedPageUrl(currentActiveTab?.url)
+              ? "Unsupported"
+              : "";
+      activeTabStatus.hidden = !statusText;
+      activeTabStatus.textContent = statusText;
+    }
+  }
+
+  if (statusActions) {
+    const showInlineRecapture =
+      !capturing && !capturedPage && state === "interrupted" && canRecapture;
+    const showInlineCaptureTab =
+      !capturing && !capturedPage && offerActiveTab;
+    statusActions.hidden = !showInlineRecapture && !showInlineCaptureTab;
+    if (statusRecaptureButton) {
+      statusRecaptureButton.hidden = !showInlineRecapture;
+      statusRecaptureButton.disabled = !showInlineRecapture || busy;
+    }
+    if (statusCaptureTabButton) {
+      statusCaptureTabButton.hidden = !showInlineCaptureTab;
+      statusCaptureTabButton.disabled = !showInlineCaptureTab || busy;
+      if (showInlineCaptureTab) {
+        statusCaptureTabButton.title = `Capture ${formatTabHost(currentActiveTab)} as the new source`;
+      }
+    }
+  }
+
+  if (state === "restricted" && !capturedPage) {
+    const hintNode = document.getElementById("statusHint");
+    if (hintNode) {
+      hintNode.textContent = offerActiveTab
+        ? `Ready on ${formatTabHost(currentActiveTab)} — click Capture this tab.`
+        : RESTRICTED_PAGE_HINT;
+    }
+  }
 }
 
 function updateRecaptureButton() {
-  if (!recaptureButton) return;
-  const visible = Boolean(capturedPage || canRetrySource);
-  recaptureButton.hidden = !visible;
-  recaptureButton.disabled =
-    !visible || capturing || !captureSourceTab || isDestinationBusy();
-  if (capturing) recaptureButton.dataset.capturing = "true";
-  else delete recaptureButton.dataset.capturing;
+  updateCaptureControls();
 }
 
 if (typeof destinationUI !== "undefined")
-  destinationUI.onBusyChange?.(updateRecaptureButton);
+  destinationUI.onBusyChange?.(updateCaptureControls);
+
+function normalizeTabSnapshot(tab) {
+  if (!Number.isInteger(tab?.id)) return null;
+  return Object.freeze({
+    id: tab.id,
+    windowId: tab.windowId,
+    url: tab.url ?? "",
+    title: tab.title ?? "",
+  });
+}
+
+let tabTrackingInstalled = false;
+
+function setupTabTracking() {
+  if (tabTrackingInstalled || typeof chrome === "undefined" || !chrome?.tabs)
+    return;
+  tabTrackingInstalled = true;
+  const resolveWindowId = async () => {
+    if (Number.isInteger(panelWindowId)) return panelWindowId;
+    if (Number.isInteger(captureSourceTab?.windowId)) {
+      panelWindowId = captureSourceTab.windowId;
+      return panelWindowId;
+    }
+    const win = await chrome.windows?.getCurrent?.().catch(() => null);
+    if (Number.isInteger(win?.id)) panelWindowId = win.id;
+    return panelWindowId;
+  };
+  const applyActiveTab = (tab) => {
+    const snapshot = normalizeTabSnapshot(tab);
+    if (!snapshot) return;
+    currentActiveTab = snapshot;
+    if (permissionDeniedTab && !isPermissionDeniedForTab(snapshot)) {
+      permissionDeniedTab = null;
+    }
+    if (
+      !capturing &&
+      capturedPage &&
+      document.body?.dataset?.state === "permission" &&
+      !isPermissionDeniedForTab(snapshot)
+    ) {
+      setStatus("success", "", "");
+    }
+    updateCaptureControls();
+  };
+
+  chrome.tabs.onActivated?.addListener?.(async (activeInfo) => {
+    const winId = await resolveWindowId();
+    if (Number.isInteger(winId) && activeInfo.windowId !== winId) return;
+    const tab = await chrome.tabs.get?.(activeInfo.tabId).catch(() => null);
+    if (tab) applyActiveTab(tab);
+  });
+
+  chrome.tabs.onUpdated?.addListener?.(async (tabId, changeInfo, tab) => {
+    if (!tab?.active) return;
+    if (!changeInfo?.url && !changeInfo?.title && changeInfo?.status !== "complete")
+      return;
+    const winId = await resolveWindowId();
+    if (Number.isInteger(winId) && tab.windowId !== winId) return;
+    if (currentActiveTab?.id && currentActiveTab.id !== tabId && !tab.active)
+      return;
+    applyActiveTab(tab);
+  });
+
+  chrome.windows?.onFocusChanged?.addListener?.(async (windowId) => {
+    const winId = await resolveWindowId();
+    if (!Number.isInteger(winId) || windowId !== winId) return;
+    const [tab] =
+      (await chrome.tabs
+        .query?.({ active: true, windowId: winId })
+        .catch(() => [])) || [];
+    if (tab) applyActiveTab(tab);
+  });
+}
+
+setupTabTracking();
 
 async function waitForActiveTab(tabId, windowId, timeoutMs = 1000) {
   const deadline = Date.now() + timeoutMs;
@@ -781,20 +1228,55 @@ async function resolveRecaptureTab() {
     id: latest.id,
     windowId: latest.windowId,
     url: latest.url ?? "",
+    title: latest.title ?? captureSourceTab.title ?? "",
   });
 }
 
-async function runPanelCapture(sourceTab) {
+async function resolveActiveTabToCapture() {
+  const winId =
+    panelWindowId ??
+    captureSourceTab?.windowId ??
+    (await chrome.windows?.getCurrent?.().catch(() => null))?.id;
+  let tab = null;
+  if (Number.isInteger(winId) && chrome.tabs?.query) {
+    const [active] = await chrome.tabs
+      .query({ active: true, windowId: winId })
+      .catch(() => []);
+    if (active?.id) tab = active;
+  }
+  if (!tab && currentActiveTab?.id && chrome.tabs?.get) {
+    tab = await chrome.tabs.get(currentActiveTab.id).catch(() => null);
+  }
+  if (!tab) tab = currentActiveTab;
+  if (!tab?.id) {
+    const error = new Error("The active tab to capture could not be identified.");
+    error.expected = true;
+    throw error;
+  }
+  return Object.freeze({
+    id: tab.id,
+    windowId: tab.windowId,
+    url: tab.url ?? "",
+    title: tab.title ?? "",
+  });
+}
+
+async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
+  setupTabTracking();
   if (capturing || isDestinationBusy()) return;
   capturing = true;
-  updateRecaptureButton();
+  const previousSource = captureSourceTab;
+  const previousCanRetry = canRetrySource;
+  const includePageTextInput = document.getElementById("includePageText");
+  const previousIncludeText = Boolean(includePageTextInput?.checked);
+  let targetSnapshot = null;
+  updateCaptureControls();
   const previewCard = document.querySelector(".preview-card");
   if (previewCard) previewCard.hidden = false;
   if (!capturedPage) {
     const emptyHeading = document.querySelector("#emptyState h2");
     if (emptyHeading) emptyHeading.textContent = "Preparing preview…";
   }
-  document.getElementById("includePageText").checked = false;
   destinationUI.suspend();
   progressValue = 0;
   document.getElementById("progressFill").style.width = "0%";
@@ -808,7 +1290,7 @@ async function runPanelCapture(sourceTab) {
   setStatus(
     "capturing",
     "Capturing…",
-    "Keep the source tab active until capture finishes.",
+    "Keep the source tab active and avoid scrolling while Page Relay captures the page.",
   );
   try {
     const tab = await sourceTab;
@@ -817,15 +1299,32 @@ async function runPanelCapture(sourceTab) {
       error.expected = true;
       throw error;
     }
-    captureSourceTab = Object.freeze({
+    if (Number.isInteger(tab.windowId)) panelWindowId = tab.windowId;
+    targetSnapshot = Object.freeze({
       id: tab.id,
       windowId: tab.windowId,
       url: tab.url ?? "",
+      title: tab.title ?? "",
     });
-    canRetrySource =
-      !isProtectedPageUrl(tab.url) && !isUnsupportedPageUrl(tab.url);
-    updateRecaptureButton();
+    currentActiveTab = targetSnapshot;
+    const preserveExisting =
+      Boolean(capturedPage) &&
+      (mode === "active-tab" || mode === "toolbar-repin");
+    if (!preserveExisting) {
+      captureSourceTab = targetSnapshot;
+      canRetrySource =
+        !isProtectedPageUrl(tab.url) && !isUnsupportedPageUrl(tab.url);
+    }
+    updateCaptureControls();
     const result = await captureFullPage(tab);
+    permissionDeniedTab = null;
+    captureSourceTab = Object.freeze({
+      id: tab.id,
+      windowId: tab.windowId,
+      url: result.url || tab.url || "",
+      title: result.title || tab.title || "",
+    });
+    currentActiveTab = captureSourceTab;
     capturedPage = result;
     canRetrySource = true;
     preview.src = result.screenshot;
@@ -847,6 +1346,13 @@ async function runPanelCapture(sourceTab) {
     setStatus("success", "", "");
     await destinationUI.show(result);
   } catch (error) {
+    if (
+      capturedPage &&
+      (mode === "active-tab" || mode === "toolbar-repin")
+    ) {
+      captureSourceTab = previousSource;
+      canRetrySource = previousCanRetry;
+    }
     if (error?.transientTab) {
       console.warn?.(
         "[Page Relay] Capture paused by temporary Chrome tab lock:",
@@ -854,36 +1360,85 @@ async function runPanelCapture(sourceTab) {
       );
     } else if (!isExpectedCaptureError(error)) {
       if (error?.diagnostic) {
-        console.error("[Page Relay] Capture failed:", error.message, error.diagnostic);
+        console.error(
+          "[Page Relay] Capture failed:",
+          error.message,
+          error.diagnostic,
+        );
       } else {
         console.error("[Page Relay] Capture failed:", error);
       }
     }
+    const interrupted = isUserInterruption(error);
     const restricted = isProtectedError(error) || isUnsupportedError(error);
-    if (restricted) {
+    const permissionDenied = !restricted && isPermissionError(error);
+    if (interrupted) {
+      const tabClosed = error?.interruptionReason === "tab-closed";
+      // Refresh the currently active tab snapshot so Capture this tab reflects
+      // whichever tab the user switched to without switching them back.
+      if (
+        (error?.interruptionReason === "tab-switch" || tabClosed) &&
+        Number.isInteger(panelWindowId) &&
+        chrome.tabs?.query
+      ) {
+        const [activeNow] = await chrome.tabs
+          .query({ active: true, windowId: panelWindowId })
+          .catch(() => []);
+        const snapshot = normalizeTabSnapshot(activeNow);
+        if (snapshot) currentActiveTab = snapshot;
+      }
+      if (!capturedPage) {
+        canRetrySource = !tabClosed && Boolean(captureSourceTab);
+        if (previewCard) previewCard.hidden = true;
+      }
+      setStatus(
+        "interrupted",
+        INTERRUPTED_PAGE_TITLE,
+        interruptionMessage(error),
+        capturedPage ? PERMISSION_PRESERVED_HINT : "",
+      );
+    } else if (restricted) {
       if (!capturedPage) {
         canRetrySource = false;
         if (previewCard) previewCard.hidden = true;
       }
       setStatus(
         "restricted",
-        isProtectedError(error) ? RESTRICTED_PAGE_TITLE : UNSUPPORTED_PAGE_TITLE,
+        isProtectedError(error)
+          ? RESTRICTED_PAGE_TITLE
+          : UNSUPPORTED_PAGE_TITLE,
         friendlyError(error),
-        RESTRICTED_PAGE_HINT,
+        capturedPage ? PERMISSION_PRESERVED_HINT : RESTRICTED_PAGE_HINT,
+      );
+    } else if (permissionDenied) {
+      if (targetSnapshot) {
+        permissionDeniedTab = {
+          id: targetSnapshot.id,
+          url: targetSnapshot.url,
+        };
+      }
+      if (!capturedPage) {
+        canRetrySource = false;
+        if (previewCard) previewCard.hidden = true;
+      }
+      setStatus(
+        "permission",
+        PERMISSION_PAGE_TITLE,
+        PERMISSION_PAGE_MESSAGE,
+        capturedPage ? PERMISSION_PRESERVED_HINT : PERMISSION_NO_CAPTURE_HINT,
       );
     } else {
       if (!capturedPage) {
         if (previewCard) previewCard.hidden = false;
         document.querySelector("#emptyState h2").textContent =
           "Preview unavailable";
-        if (isPermissionError(error)) canRetrySource = false;
       }
       const canRecaptureNow = Boolean(
         captureSourceTab && (capturedPage || canRetrySource),
       );
       const recovery = canRecaptureNow
-        ? "Click Recapture to try again, or reopen the Side Panel from the toolbar icon."
-        : "Close the Side Panel, then reopen it using the extension toolbar icon to retry.";
+        ? "Click Recapture to try again, or click the Page Relay toolbar icon on the tab you want to capture."
+        : "Click the Page Relay icon in the Chrome toolbar while on a regular webpage to retry.";
       setStatus(
         "error",
         "Couldn’t capture this page",
@@ -892,6 +1447,7 @@ async function runPanelCapture(sourceTab) {
     }
     document.getElementById("pageText").hidden = !capturedPage;
     if (capturedPage) {
+      if (includePageTextInput) includePageTextInput.checked = previousIncludeText;
       showTextStats(capturedPage);
       document.getElementById("textPreview").textContent =
         capturedPage.text || "No rendered page text was found.";
@@ -900,7 +1456,7 @@ async function runPanelCapture(sourceTab) {
   } finally {
     capturing = false;
     document.getElementById("captureProgress").hidden = true;
-    updateRecaptureButton();
+    updateCaptureControls();
   }
 }
 
@@ -910,6 +1466,38 @@ async function startPanelCapture(sourceTab) {
   return runPanelCapture(sourceTab);
 }
 
+async function handleToolbarRepin(message) {
+  permissionDeniedTab = null;
+  const resolveGrantedTab = async () => {
+    if (Number.isInteger(message?.tab?.id)) {
+      const live = await chrome.tabs
+        ?.get?.(message.tab.id)
+        .catch(() => null);
+      const chosen = live?.id ? live : message.tab;
+      return Object.freeze({
+        id: chosen.id,
+        windowId: chosen.windowId,
+        url: chosen.url ?? "",
+        title: chosen.title ?? "",
+      });
+    }
+    if (typeof resolveSourceTab === "function") return resolveSourceTab();
+    return resolveActiveTabToCapture();
+  };
+  return runPanelCapture(resolveGrantedTab(), { mode: "toolbar-repin" });
+}
+
 recaptureButton?.addEventListener("click", () => {
-  void runPanelCapture(resolveRecaptureTab());
+  void runPanelCapture(resolveRecaptureTab(), { mode: "source" });
 });
+
+statusRecaptureButton?.addEventListener("click", () => {
+  void runPanelCapture(resolveRecaptureTab(), { mode: "source" });
+});
+
+const handleCaptureActiveTab = () => {
+  void runPanelCapture(resolveActiveTabToCapture(), { mode: "active-tab" });
+};
+
+captureActiveTabButton?.addEventListener("click", handleCaptureActiveTab);
+statusCaptureTabButton?.addEventListener("click", handleCaptureActiveTab);

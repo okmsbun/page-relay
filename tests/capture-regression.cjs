@@ -68,7 +68,7 @@ async function check(url, dpr) {
     assert.equal(original.y, 0, "Source scroll position restored");
     console.log(`PASS real Chrome DPR ${original.dpr}: ${pixels.height} exact rows; root/body ${original.root}/${original.body}`);
   } finally {
-    browser.close();
+    await browser.close();
   }
 }
 

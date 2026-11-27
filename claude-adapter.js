@@ -1,8 +1,13 @@
 /* Files only. The shared preparation routine preserves the existing composer. */
-async function prepareInClaude(destination, capture) {
-  const payload = CapturePreparation.payload({ ...destination, providerId: "claude" }, capture);
+async function prepareInClaude(destination, capture, options) {
+  const payload = CapturePreparation.payload(
+    { ...destination, providerId: "claude" },
+    capture,
+    options,
+  );
   await ChatDestinations.validate(destination);
-  if (Date.now() >= payload.deadline) throw new Error("Preparation expired before upload. Refresh and retry.");
+  if (Date.now() >= payload.deadline)
+    throw new Error("Preparation expired before upload. Refresh and retry.");
   let result;
   try {
     const results = await chrome.scripting.executeScript({
@@ -21,9 +26,15 @@ async function prepareInClaude(destination, capture) {
   );
   error.needsReview = result?.needsReview ?? true;
   error.busy = result?.busy === true && result.needsReview === false;
+  if (Array.isArray(result?.delivered)) error.delivered = result.delivered;
+  if (Array.isArray(result?.failedKinds)) error.failedKinds = result.failedKinds;
   throw error;
 }
 
 async function prepareInClaudeComposer(payload) {
-  return prepareFilesInComposer({ ...payload, providerId: "claude", deadline: payload.deadline ?? Date.now() + 140000 });
+  return prepareFilesInComposer({
+    ...payload,
+    providerId: "claude",
+    deadline: payload.deadline ?? Date.now() + 140000,
+  });
 }

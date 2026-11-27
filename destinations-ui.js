@@ -29,12 +29,35 @@ const destinationUI = (() => {
     for (const listener of busyListeners) listener(busy);
   }
 
+  function attachmentStates(status) {
+    if (status?.attachments) return status.attachments;
+    if (!status?.state) return { png: null, txt: null };
+    return { png: status.state, txt: null };
+  }
+
+  function pendingKindsFor(item, wantTxt = includePageText.checked) {
+    if (item.unavailable) return [];
+    const status = statuses.get(item.id);
+    const { png, txt } = attachmentStates(status);
+    if (["review", "unsupported"].includes(png)) return [];
+    if (wantTxt && ["review", "unsupported"].includes(txt)) return [];
+    const needed = [];
+    if (png !== "prepared") needed.push("png");
+    if (wantTxt && txt !== "prepared") needed.push("txt");
+    return needed;
+  }
+
   function isEligible(item) {
+    return pendingKindsFor(item).length > 0;
+  }
+
+  function isProtectedState(status) {
+    if (!status) return false;
+    const { png, txt } = attachmentStates(status);
     return (
-      !item.unavailable &&
-      !["prepared", "review", "unsupported"].includes(
-        statuses.get(item.id)?.state,
-      )
+      ["prepared", "review"].includes(png) ||
+      ["prepared", "review"].includes(txt) ||
+      ["prepared", "review"].includes(status.state)
     );
   }
 
@@ -66,17 +89,106 @@ const destinationUI = (() => {
     }
   }
 
+  function formatActionLabel(selectedItems) {
+    const count = selectedItems.length;
+    if (!count) return "Select conversations";
+    const signatures = new Set(
+      selectedItems.map((item) => pendingKindsFor(item).join("+")),
+    );
+    if (signatures.size === 1) {
+      const only = [...signatures][0];
+      if (only === "png") {
+        return count === 1
+          ? "Add screenshot"
+          : `Add screenshot to ${count} chats`;
+      }
+      if (only === "txt") {
+        return count === 1
+          ? "Add page text"
+          : `Add page text to ${count} chats`;
+      }
+      if (only === "png+txt") {
+        return count === 1
+          ? "Add screenshot and text"
+          : `Add screenshot and text to ${count} chats`;
+      }
+    }
+    return count === 1 ? "Add to 1 chat" : `Add to ${count} chats`;
+  }
+
   function updateButton() {
-    const count = selection.size;
+    const selectedItems = destinations.filter(
+      (item) => selection.has(item.id) && isEligible(item),
+    );
+    const count = selectedItems.length;
     sendButton.textContent = busy
       ? "Adding…"
-      : count
-        ? `Add to ${count} ${count === 1 ? "chat" : "chats"}`
-        : "Select conversations";
+      : formatActionLabel(selectedItems);
     sendButton.disabled = busy || discovering || !count || !capture || !prepare;
     sendButton.title = prepare
       ? "The capture is added to the chat draft. You review and send it."
       : "Adding requires a preparation method to be configured.";
+  }
+
+  function deliveredBadgeText(attachments) {
+    const hasPng = attachments.png === "prepared";
+    const hasTxt = attachments.txt === "prepared";
+    if (hasPng && hasTxt) return "Screenshot and text added";
+    if (hasPng) return "Screenshot added";
+    if (hasTxt) return "Page text added";
+    return null;
+  }
+
+  function activeIssueFor(item, status) {
+    if (item.unavailable) {
+      return { state: "unavailable", message: item.unavailable, kind: null };
+    }
+    if (!status) return null;
+    const { png, txt } = attachmentStates(status);
+    if (status.state === "preparing" || png === "preparing" || txt === "preparing") {
+      const label =
+        png === "prepared" && txt === "preparing"
+          ? "Adding page text…"
+          : "Adding…";
+      return { state: "preparing", label, message: status.message };
+    }
+    const attention = ["review", "failed", "busy", "unsupported", "unavailable"];
+    if (attention.includes(png)) {
+      return {
+        state: png,
+        message: status.pngMessage || status.message,
+        kind: "png",
+      };
+    }
+    if (attention.includes(txt)) {
+      return {
+        state: txt,
+        message: status.txtMessage || status.message,
+        kind: "txt",
+      };
+    }
+    if (attention.includes(status.state)) {
+      return { state: status.state, message: status.message, kind: null };
+    }
+    return null;
+  }
+
+  function rowDatasetState(item, status) {
+    if (item.unavailable) return "unavailable";
+    const issue = activeIssueFor(item, status);
+    if (issue) return issue.state;
+    const { png, txt } = attachmentStates(status);
+    if (png === "prepared" && (!includePageText.checked || txt === "prepared"))
+      return "prepared";
+    if (png === "prepared" || txt === "prepared") return "partial";
+    return "ready";
+  }
+
+  function providerAttentionStates(providerId) {
+    return destinations
+      .filter((item) => item.providerId === providerId)
+      .map((item) => activeIssueFor(item, statuses.get(item.id))?.state)
+      .filter(Boolean);
   }
 
   function render() {
@@ -102,80 +214,98 @@ const destinationUI = (() => {
           .toLowerCase()
           .includes(query),
     );
-    {
-      const items = visible;
-      for (const item of items) {
-        const row = document.createElement("div");
-        row.className = "destination-row";
-        const status = statuses.get(item.id);
-        row.dataset.state = status?.state || (item.unavailable ? "unavailable" : "ready");
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.id = `destination-${item.id}`;
-        checkbox.setAttribute(
-          "aria-label",
-          `${item.providerName}: ${item.title}, ${item.label}`,
-        );
-        checkbox.checked = selection.has(item.id);
-        checkbox.disabled =
-          busy ||
-          discovering ||
-          !!item.unavailable ||
-          ["prepared", "review", "unsupported"].includes(
-            status?.state,
-          );
-        checkbox.addEventListener("change", () => {
-          userTouchedSelection = true;
-          checkbox.checked ? selection.add(item.id) : selection.delete(item.id);
-          renderTabs(providers);
-          updateButton();
-        });
-        const description = document.createElement("div");
-        description.className = "destination-description";
-        const title = document.createElement("label");
-        title.htmlFor = checkbox.id;
-        title.className = "destination-title";
-        title.textContent = item.title;
-        title.title = item.title;
-        const details = document.createElement("span");
-        details.className = "destination-detail";
-        details.textContent = item.label;
-        description.append(title, details);
-        if (status || item.unavailable) {
-          const state = status?.state || "unavailable";
+    for (const item of visible) {
+      const row = document.createElement("div");
+      row.className = "destination-row";
+      const status = statuses.get(item.id);
+      const attachments = attachmentStates(status);
+      const eligible = isEligible(item);
+      row.dataset.state = rowDatasetState(item, status);
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.id = `destination-${item.id}`;
+      checkbox.setAttribute(
+        "aria-label",
+        `${item.providerName}: ${item.title}, ${item.label}`,
+      );
+      checkbox.checked = eligible && selection.has(item.id);
+      checkbox.disabled = busy || discovering || !eligible;
+      checkbox.addEventListener("change", () => {
+        userTouchedSelection = true;
+        checkbox.checked ? selection.add(item.id) : selection.delete(item.id);
+        renderTabs(providers);
+        updateButton();
+      });
+      const description = document.createElement("div");
+      description.className = "destination-description";
+      const title = document.createElement("label");
+      title.htmlFor = checkbox.id;
+      title.className = "destination-title";
+      title.textContent = item.title;
+      title.title = item.title;
+      const details = document.createElement("span");
+      details.className = "destination-detail";
+      details.textContent = item.label;
+      description.append(title, details);
+
+      const deliveredText = deliveredBadgeText(attachments);
+      const issue = activeIssueFor(item, status);
+      if (deliveredText || issue) {
+        const feedbackRow = document.createElement("div");
+        feedbackRow.className = "destination-feedback-group";
+        if (deliveredText) {
+          const badge = document.createElement("span");
+          badge.className = "destination-feedback prepared";
+          badge.textContent = deliveredText;
+          feedbackRow.append(badge);
+        }
+        if (issue) {
           const labels = {
-            prepared: "Added",
-            preparing: "Adding…",
-            busy: status?.message?.startsWith("Generating a response")
+            preparing: issue.label || "Adding…",
+            busy: issue.message?.startsWith("Generating a response")
               ? "Busy · Generating a response"
               : "Busy",
-            failed: "Failed",
-            review: "Needs review",
+            failed:
+              deliveredText && issue.kind === "txt"
+                ? "Page text failed"
+                : "Failed",
+            review:
+              deliveredText && issue.kind === "txt"
+                ? "Page text needs review"
+                : "Needs review",
             unsupported: "Unsupported",
             unavailable: "Unavailable",
           };
           const feedback = document.createElement(
-            ["prepared", "preparing"].includes(state) ? "span" : "details",
+            issue.state === "preparing" ? "span" : "details",
           );
-          feedback.className = `destination-feedback ${state}`;
+          feedback.className = `destination-feedback ${issue.state}`;
           if (feedback.tagName === "DETAILS") {
             const summary = document.createElement("summary");
-            summary.textContent = labels[state];
+            summary.textContent = labels[issue.state];
             const reason = document.createElement("span");
-            reason.textContent = status?.message || item.unavailable;
+            reason.textContent = issue.message || item.unavailable;
             feedback.append(summary, reason);
-          } else feedback.textContent = labels[state];
-          description.append(feedback);
+          } else {
+            feedback.textContent = labels[issue.state];
+          }
+          feedbackRow.append(feedback);
+        } else if (deliveredText && eligible && includePageText.checked) {
+          const readyHint = document.createElement("span");
+          readyHint.className = "destination-feedback followup";
+          readyHint.textContent = "Ready for page text";
+          feedbackRow.append(readyHint);
         }
-        row.append(checkbox, description);
-        // The whole visible row selects the chat. Preserve native label/checkbox
-        // activation and let expandable feedback remain independently interactive.
-        row.addEventListener("click", (event) => {
-          if (event.target.closest("input, label, details, button, a")) return;
-          if (!checkbox.disabled) checkbox.click();
-        });
-        list.append(row);
+        description.append(feedbackRow);
       }
+      row.append(checkbox, description);
+      // The whole visible row selects the chat. Preserve native label/checkbox
+      // activation and let expandable feedback remain independently interactive.
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("input, label, details, button, a")) return;
+        if (!checkbox.disabled) checkbox.click();
+      });
+      list.append(row);
     }
     if (!visible.length) {
       const empty = document.createElement("p");
@@ -238,7 +368,10 @@ const destinationUI = (() => {
       label.textContent = provider.name;
       tab.append(icon, label);
       const count = destinations.filter(
-        (item) => item.providerId === provider.id && selection.has(item.id),
+        (item) =>
+          item.providerId === provider.id &&
+          selection.has(item.id) &&
+          isEligible(item),
       ).length;
       if (count) {
         const badge = document.createElement("span");
@@ -246,9 +379,7 @@ const destinationUI = (() => {
         badge.textContent = count;
         tab.append(badge);
       }
-      const results = destinations
-        .filter((item) => item.providerId === provider.id)
-        .map((item) => statuses.get(item.id)?.state);
+      const results = providerAttentionStates(provider.id);
       tab.classList.toggle(
         "has-attention",
         results.some((state) => ["failed", "review"].includes(state)),
@@ -257,7 +388,7 @@ const destinationUI = (() => {
       tab.title = [
         provider.name,
         count ? `${count} selected` : "",
-        ...new Set(results.filter(Boolean)),
+        ...new Set(results),
       ]
         .filter(Boolean)
         .join(" · ");
@@ -298,27 +429,27 @@ const destinationUI = (() => {
       if (version !== generation) return;
       const found = overview.destinations;
       const previous = new Map(destinations.map((item) => [item.id, item]));
-      selection = new Set(
-        found
-          .filter(
-            (item) =>
-              selection.has(item.id) &&
-              !item.unavailable &&
-              previous.get(item.id)?.url === item.url &&
-              previous.get(item.id)?.incognito === item.incognito,
-          )
-          .map((item) => item.id),
-      );
       statuses = new Map(
         found
           .filter(
             (item) =>
               previous.get(item.id)?.url === item.url ||
-              (["prepared", "review"].includes(statuses.get(item.id)?.state) &&
+              (isProtectedState(statuses.get(item.id)) &&
                 previous.get(item.id)?.providerId === item.providerId),
           )
           .filter((item) => statuses.has(item.id))
           .map((item) => [item.id, statuses.get(item.id)]),
+      );
+      selection = new Set(
+        found
+          .filter(
+            (item) =>
+              selection.has(item.id) &&
+              isEligible(item) &&
+              previous.get(item.id)?.url === item.url &&
+              previous.get(item.id)?.incognito === item.incognito,
+          )
+          .map((item) => item.id),
       );
       destinations = found;
       applyDefaultSelection();
@@ -343,16 +474,23 @@ const destinationUI = (() => {
     }
   }
 
+  includePageText.addEventListener("change", () => {
+    if (busy) return;
+    // Prune selections that are no longer eligible when turning page text off,
+    // while keeping previously delivered attachments and eligible selections intact.
+    for (const id of [...selection]) {
+      const item = destinations.find((entry) => entry.id === id);
+      if (!item || !isEligible(item)) selection.delete(id);
+    }
+    render();
+  });
+
   sendButton.addEventListener("click", async () => {
     if (busy || discovering || !capture || !prepare || !selection.size) return;
     const chosen = destinations.filter(
-      (item) =>
-        selection.has(item.id) &&
-        !item.unavailable &&
-        !["prepared", "review", "unsupported"].includes(
-          statuses.get(item.id)?.state,
-        ),
+      (item) => selection.has(item.id) && isEligible(item),
     );
+    if (!chosen.length) return;
     setBusy(true);
     capture.includeText = includePageText.checked;
     includePageText.disabled = true;
@@ -365,10 +503,12 @@ const destinationUI = (() => {
         prepare,
         (id, result) => {
           statuses.set(id, result);
+          const item = destinations.find((entry) => entry.id === id);
           if (
             ["prepared", "review", "unsupported", "unavailable"].includes(
               result.state,
-            )
+            ) ||
+            (item && !isEligible(item))
           )
             selection.delete(id);
           render();

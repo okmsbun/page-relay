@@ -29,6 +29,28 @@
   </header>
 
   <main>
+    <section id="sourceBar" class="source-bar" aria-label="Capture source" hidden>
+      <div class="source-row">
+        <span class="source-badge">Captured</span>
+        <span id="sourcePage" class="source-page"></span>
+      </div>
+      <div id="activeTabRow" class="source-row active-tab-row" hidden>
+        <div class="source-meta">
+          <span class="source-badge active-badge">Active tab</span>
+          <span id="activeTabLabel" class="source-page"></span>
+        </div>
+        <button id="captureActiveTab" class="capture-tab-button" type="button"
+          title="Capture the currently active browser tab as the new source" hidden disabled>
+          <svg class="inline-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2" y="3" width="12" height="10" rx="2" />
+            <path d="M2 6h12M8 8v3.5M6.25 9.75h3.5" />
+          </svg>
+          <span>Capture this tab</span>
+        </button>
+        <span id="activeTabStatus" class="active-tab-status" hidden></span>
+      </div>
+    </section>
+
     <section class="capture-status" aria-live="polite" aria-atomic="true">
       <span class="status-icon" aria-hidden="true">
         <svg viewBox="0 0 20 20">
@@ -39,6 +61,23 @@
         <h2 id="statusTitle"></h2>
         <p id="statusDetail"></p>
         <p id="statusHint" class="status-hint"></p>
+        <div id="statusActions" class="status-actions" hidden>
+          <button id="statusRecapture" class="status-action-button primary" type="button" hidden>
+            <svg class="inline-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M2.5 5.25V4a1.5 1.5 0 0 1 1.5-1.5h1.25M10.75 2.5H12A1.5 1.5 0 0 1 13.5 4v1.25M13.5 10.75V12a1.5 1.5 0 0 1-1.5 1.5h-1.25M5.25 13.5H4A1.5 1.5 0 0 1 2.5 12v-1.25" />
+              <circle cx="8" cy="8" r="2.25" />
+            </svg>
+            <span>Recapture</span>
+          </button>
+          <button id="statusCaptureTab" class="status-action-button primary" type="button" hidden>
+            <svg class="inline-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="2" y="3" width="12" height="10" rx="2" />
+              <path d="M2 6h12M8 8v3.5M6.25 9.75h3.5" />
+            </svg>
+            <span>Capture this tab</span>
+          </button>
+        </div>
       </div>
     </section>
     <div id="captureProgress" class="progress-track" role="progressbar" aria-label="Capture progress" aria-valuemin="0"

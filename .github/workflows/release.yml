@@ -1,0 +1,309 @@
+name: Release Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Free disk space (conditional, safe allowlist)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          df -h /
+          avail_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
+          min_free_kib=$((10 * 1024 * 1024)) # 10 GiB
+          if [ "$avail_kib" -ge "$min_free_kib" ]; then
+            echo "Sufficient free disk space (${avail_kib} KiB >= ${min_free_kib} KiB); skipping cleanup."
+            exit 0
+          fi
+
+          # Remove only large, standalone (non-dpkg-managed, non-symlink) preinstalled toolchains.
+          # Chrome/Chromium, Node.js, Git, gh, Bash, zip/unzip, and the dpkg database stay untouched.
+          for dir in \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup \
+            /usr/share/swift \
+            /usr/share/miniconda \
+            /usr/local/julia \
+            /usr/local/aws-cli
+          do
+            [ -L "$dir" ] && continue
+            [ -d "$dir" ] || continue
+            dpkg -S "$dir" >/dev/null 2>&1 && continue
+            du -sh "$dir" || true
+            sudo rm -rf -- "$dir"
+          done
+
+          sudo apt-get clean
+          df -h /
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Verify version, tag alignment, and main branch ancestry
+        id: meta
+        run: |
+          set -euo pipefail
+          version=$(node -p 'require("./manifest.json").version')
+          if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then
+            echo "Invalid manifest.json version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            expected="v$version"
+            if [[ "$GITHUB_REF_NAME" != "$expected" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match manifest.json version $version (expected $expected)" >&2
+              exit 1
+            fi
+            if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+              echo "Unable to resolve origin/main to verify release tag ancestry" >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor HEAD origin/main; then
+              echo "Release tag $GITHUB_REF_NAME must point to a commit reachable from 'main'" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Check syntax, manifest, and runtime file integrity
+        run: |
+          set -euo pipefail
+          for file in *.js tests/*.js tests/*.cjs; do
+            node --check "$file"
+          done
+          bash -n scripts/package.sh
+          node - <<'EOF'
+          const assert = require("node:assert/strict");
+          const fs = require("node:fs");
+
+          const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          assert.equal(manifest.manifest_version, 3, "manifest_version must be 3");
+          assert.match(manifest.version, /^[0-9]+(?:\.[0-9]+){0,3}$/, "invalid Chrome version");
+          assert.deepEqual(manifest.permissions, [
+            "activeTab",
+            "scripting",
+            "sidePanel",
+            "storage",
+            "tabs",
+          ]);
+          assert.ok(
+            !manifest.host_permissions.includes("<all_urls>"),
+            "must not request <all_urls>",
+          );
+
+          const required = new Set([
+            "manifest.json",
+            manifest.background.service_worker,
+            manifest.side_panel.default_path,
+            ...Object.values(manifest.icons),
+            ...Object.values(manifest.action.default_icon),
+          ]);
+
+          const html = fs.readFileSync(manifest.side_panel.default_path, "utf8");
+          for (const match of html.matchAll(/<script\s+src="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+          for (const match of html.matchAll(/<link\s+[^>]*href="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+
+          const panelJs = fs.readFileSync("panel.js", "utf8");
+          const injectMatch = panelJs.match(/files:\s*\[([^\]]+)\]/);
+          assert.ok(injectMatch, "expected injected capture script list in panel.js");
+          for (const item of injectMatch[1].matchAll(/"([^"]+)"/g)) {
+            required.add(item[1]);
+          }
+
+          const packageScript = fs.readFileSync("scripts/package.sh", "utf8");
+          for (const file of required) {
+            assert.ok(fs.existsSync(file), `missing runtime file: ${file}`);
+            assert.ok(
+              packageScript.includes(file),
+              `runtime file missing from scripts/package.sh: ${file}`,
+            );
+          }
+
+          console.log(`PASS manifest v${manifest.version} and ${required.size} runtime files verified`);
+          EOF
+
+      - name: Run unit tests
+        run: node --test tests/*.test.cjs
+
+      - name: Locate Google Chrome
+        id: chrome
+        run: |
+          set -euo pipefail
+          chrome_bin="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium || true)"
+          if [[ -z "$chrome_bin" ]]; then
+            echo "Google Chrome binary not found on runner" >&2
+            exit 1
+          fi
+          echo "Using Chrome binary: $chrome_bin"
+          "$chrome_bin" --version
+          echo "bin=$chrome_bin" >> "$GITHUB_OUTPUT"
+
+      - name: Run browser and native control tests
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.bin }}
+        run: |
+          set -euo pipefail
+          node tests/browser-check.cjs
+          node tests/provider-controls.cjs
+
+  package:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build and validate Chrome Web Store ZIP
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          zip_name=$(bash scripts/package.sh)
+          expected="pagerelay-$VERSION.zip"
+          if [[ "$zip_name" != "$expected" ]]; then
+            echo "Unexpected archive name: $zip_name (expected $expected)" >&2
+            exit 1
+          fi
+          unzip -l "$zip_name"
+          node - "$zip_name" "$VERSION" <<'EOF'
+          const assert = require("node:assert/strict");
+          const fs = require("node:fs");
+          const { execFileSync } = require("node:child_process");
+
+          const [zipName, expectedVersion] = process.argv.slice(2);
+          const entries = execFileSync("zipinfo", ["-1", zipName], { encoding: "utf8" })
+            .trim()
+            .split("\n")
+            .filter(Boolean);
+
+          const manifest = JSON.parse(
+            execFileSync("unzip", ["-p", zipName, "manifest.json"], { encoding: "utf8" }),
+          );
+          assert.equal(manifest.version, expectedVersion);
+
+          const required = new Set([
+            "manifest.json",
+            manifest.background.service_worker,
+            manifest.side_panel.default_path,
+            ...Object.values(manifest.icons),
+            ...Object.values(manifest.action.default_icon),
+          ]);
+          const html = fs.readFileSync(manifest.side_panel.default_path, "utf8");
+          for (const match of html.matchAll(/<script\s+src="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+          for (const match of html.matchAll(/<link\s+[^>]*href="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+          const panelJs = fs.readFileSync("panel.js", "utf8");
+          const injectMatch = panelJs.match(/files:\s*\[([^\]]+)\]/);
+          assert.ok(injectMatch, "expected injected capture script list in panel.js");
+          for (const item of injectMatch[1].matchAll(/"([^"]+)"/g)) {
+            required.add(item[1]);
+          }
+
+          assert.ok(entries.includes("manifest.json"), "manifest.json must be at ZIP root");
+          assert.ok(!entries.some((e) => e.startsWith("release/")), "ZIP must not wrap files in release/");
+          for (const file of required) {
+            assert.ok(entries.includes(file), `missing required runtime file in ZIP: ${file}`);
+          }
+          for (const forbidden of [
+            /^tests\//,
+            /^scripts\//,
+            /^docs\//,
+            /^\.github\//,
+            /\.md$/i,
+            /^LICENSE$/,
+            /icon-1024\.png$/,
+            /\.DS_Store$/,
+          ]) {
+            assert.ok(
+              !entries.some((e) => forbidden.test(e)),
+              `forbidden file found in ZIP matching ${forbidden}`,
+            );
+          }
+
+          console.log(`PASS ${zipName} validated (${entries.length} files, v${manifest.version})`);
+          EOF
+          sha256sum "$zip_name" > "$zip_name.sha256"
+
+      - name: Upload release package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pagerelay-${{ needs.validate.outputs.version }}
+          path: |
+            pagerelay-${{ needs.validate.outputs.version }}.zip
+            pagerelay-${{ needs.validate.outputs.version }}.zip.sha256
+          if-no-files-found: error
+
+  github-release:
+    needs: [validate, package]
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pagerelay-${{ needs.validate.outputs.version }}
+          path: dist
+
+      - name: Verify downloaded release artifacts
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        working-directory: dist
+        run: sha256sum -c "pagerelay-$VERSION.zip.sha256"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        working-directory: dist
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "pagerelay-$VERSION.zip" \
+            "pagerelay-$VERSION.zip.sha256" \
+            --repo "$GH_REPO" \
+            --verify-tag \
+            --title "Page Relay v$VERSION" \
+            --generate-notes

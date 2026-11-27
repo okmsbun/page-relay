@@ -24,9 +24,14 @@ can reach their open background tabs.
 Open the panel using the extension toolbar icon to start one automatic capture.
 Opening it from Chrome's Side Panel menu does not grant `activeTab` access to an
 arbitrary source page.
-`service-worker.js` pins that clicked tab in `chrome.storage.session`, and
-`sidepanel-session.js` resolves the source exactly once when the panel document
-opens: the pinned tab when the click is recent, otherwise the active tab of the
+`service-worker.js` pins that clicked tab in `chrome.storage.session`, checks
+for an open global Side Panel via `chrome.runtime.getContexts({ contextTypes:
+["SIDE_PANEL"] })` (without filtering by `windowIds`, because Chrome reports
+`windowId: -1` for global `SIDE_PANEL` contexts), and notifies any open panel
+via `captureSource:pinned` (with a `chrome.storage.session.onChanged` fallback
+deduplicated by `pinnedAt` and scoped to the panel's window).
+`sidepanel-session.js` resolves the source once when the panel document opens:
+the pinned tab when the click is recent, otherwise the active tab of the
 panel's own window. The resolved source is frozen and reused, so switching tabs
 afterwards never replaces or restarts it. The panel's own `chrome-extension://`
 document can never be the source; an unusable lookup is reported as a lookup
@@ -38,11 +43,29 @@ background tab. After capture, browse freely. Click **Recapture** in the panel h
 capture the pinned source tab again without reopening the panel (if the source
 tab is in the background, Page Relay switches back to it automatically before
 capturing; recapture replaces the screenshot/text, resets delivery statuses and
-duplicate protection, and re-applies default conversation selection). Recapture
-also remains available after a retryable initial capture error. Transient page
-layout shifts trigger up to two clean, bounded recovery retries after settling.
-Closing/recreating the panel starts a fresh session; captures are not saved to
-disk or restored across browser restarts.
+duplicate protection, and re-applies default conversation selection). When you switch to another eligible webpage while the Side Panel is open, the
+source bar clearly distinguishes the **Captured** source from the **Active tab**
+and offers **Capture this tab**. If Chrome has already granted access to that
+tab (either via persistent provider host permissions or an earlier `activeTab`
+grant on the same origin), **Capture this tab** captures it directly. If Chrome
+requires a fresh `activeTab` grant for a newly visited tab, Page Relay shows a
+calm **Page access required** state (instead of a red error card), hides the
+unusable button for that tab, preserves the previous valid capture, extracted
+text, and delivery states, and automatically continues capture in-place the
+moment you click the **Page Relay** toolbar icon—without closing or reloading
+the Side Panel. Switching from a **Restricted page** or **Unsupported page** to
+a normal webpage also enables **Capture this tab** directly inside the open
+panel. Expected user-triggered capture interruptions—including manual scrolling
+(detected via passive trusted input listeners), switching away from the source
+tab mid-capture, persistent tab-strip drags, or navigating/closing the source
+tab—safely stop capture without stitching pixels from the wrong tab or yanking
+the user back, and transition cleanly to the calm **Capture interrupted** state
+with a prominent **Recapture** button while preserving any previous valid
+capture, active-tab context, and **Capture this tab** option. Expected
+interruptions are never logged as extension errors; genuine unrecovered capture
+failures continue to surface structured `console.error` diagnostics. Transient page layout shifts trigger up to two clean,
+bounded recovery retries after settling. Closing/recreating the panel starts a
+fresh session; captures are not saved to disk or restored across browser restarts.
 
 ### Permissions
 
@@ -108,7 +131,7 @@ used to identify the source tab and classify protected pages.
 Provider tabs are derived from the latest matching open conversations, never
 from the whole registry. When the destination list is initially populated for a
 capture, the first eligible conversation is selected by default (skipping
-unavailable tabs) so **Add to 1 chat** is ready immediately; manual selection
+unavailable tabs) so **Add screenshot** is ready immediately; manual selection
 changes are respected across refreshes, and a fresh capture/recapture applies
 default selection again. Refresh adds new providers, removes closed providers,
 and selects a remaining provider if the active one disappears. Selections on
@@ -166,12 +189,13 @@ copied into the new batch. A native selection not yet represented by rendered
 attachments is rejected before replacing that input's selection. Existing upload
 progress is Busy and can be retried manually once finished.
 
-Completion means Page Relay validated preflight state, handed off the expected
-file(s) (PNG, plus TXT when selected) to the provider's upload control(s) and
-dispatched the change event, and confirmed no immediate handoff error, consent
-dialog, draft edit, unexpected extra attachment, or loss of existing attachments
-occurred. Page Relay reports success (`prepared: true`) and displays **Added**
-immediately after handoff. It does not wait for the provider to finish uploading,
+Completion means Page Relay validated preflight state, handed off the requested
+file(s) (PNG, TXT, or both) to the provider's upload control(s) and dispatched
+the change event, and confirmed no immediate handoff error, consent dialog,
+draft edit, unexpected extra attachment, or loss of existing attachments
+occurred. Page Relay reports success (`prepared: true`) and immediately shows
+the delivered status (**Screenshot added**, **Page text added**, or **Screenshot
+and text added**) after handoff. It does not wait for the provider to finish uploading,
 processing, rendering previews, or enabling Send, and it does not monitor or
 report subsequent provider-side upload failures; the provider continues
 independently. Changes by the user or provider during handoff result in Needs
@@ -189,18 +213,23 @@ Gemini opens its upload menu via structural menu triggers (independent of UI
 language), excludes single-file mobile `capture="camera"` inputs, and resolves
 its current media (`accept="image/*,video/*"` or legacy `accept="image/*"`) and
 document (`images-files-uploader > input[type="file"]` or unified fallback)
-controls before handing off PNG and optional TXT without waiting for PNG upload
-or preview completion; its TXT upload path is skipped entirely otherwise. If
-Gemini detaches the TXT input during PNG handoff, the routine re-acquires it via
-the upload menu before handing off TXT. When Page Relay opened the upload menu,
-it closes the menu cleanly after the operation. Existing files are included in
-preservation checks, and filename matching still accounts for Gemini's observed
-`<unique-stem>_<suffix>.jpg` conversion during duplicate/existing-file checks.
-Consent is never accepted automatically. Gemini temporarily activates its
-destination tab, retrying temporary Chrome tab-strip locks (such as while
-dragging a tab) with bounded backoff before injection so attachments are never
-duplicated, and restores the prior tab only if the user has not switched away
-(best effort with a two-second bound).
+controls for PNG-only, TXT-only, and PNG+TXT delivery. When handing off PNG and
+TXT via separate inputs, Page Relay yields briefly after PNG handoff (~50–350ms,
+exiting as soon as Gemini consumes the input or closes its menu) before
+re-acquiring the TXT input, avoiding Gemini's concurrent-input drop race without
+waiting for upload completion or the Send button. When Page Relay opened the
+upload menu, it closes the menu only if it is still visibly open after handoff,
+preventing double-toggling a menu Gemini already closed. Existing files are
+included in preservation checks, and filename matching still accounts for
+Gemini's observed `<unique-stem>_<suffix>.jpg` conversion during
+duplicate/existing-file checks. PNG and TXT delivery states are tracked
+independently per destination and per capture, so enabling **Include page text**
+after adding a screenshot allows adding only the missing TXT file without
+recapturing or resending the PNG. Consent is never accepted automatically.
+Gemini temporarily activates its destination tab, retrying temporary Chrome
+tab-strip locks (such as while dragging a tab) with bounded backoff before
+injection so attachments are never duplicated, and restores the prior tab only
+if the user has not switched away (best effort with a two-second bound).
 
 ## Scheduling, timeouts and duplicate protection
 
@@ -267,14 +296,17 @@ authenticated provider end-to-end tests. No real messages are sent by these test
 2. Open disposable ChatGPT, Claude and Gemini conversations, including an empty
    new chat. Open the panel on a nonsensitive source page, let capture finish,
    leave **Include page text** off, select destinations across provider tabs,
-   then click **Add to N chats**. Confirm only one PNG was added per chat and
-   the editor stays empty, and **nothing was submitted**: no new user
-   turn, no generation. The panel must show **Added**. Test a new chat's URL
-   transition as well.
-3. Repeat with **Include page text** on for each provider, with existing text,
-   existing attachments, and both. Original text and attachments must remain
-   unchanged; only the new PNG/TXT are added and the result is Added. Verify TXT
-   metadata and the unchanged extracted
+   then click **Add screenshot** (or **Add screenshot to N chats**). Confirm
+   only one PNG was added per chat, the editor stays empty, and **nothing was
+   submitted**: no new user turn, no generation. The panel must show
+   **Screenshot added**. Test enabling **Include page text** afterward and
+   clicking **Add page text** to confirm only the missing TXT is added without
+   resending the PNG (status updates to **Screenshot and text added**). Test a
+   new chat's URL transition as well.
+3. Repeat with **Include page text** on from the start for each provider, with
+   existing text, existing attachments, and both. Original text and attachments
+   must remain unchanged; only the new PNG/TXT are added and the result is
+   **Screenshot and text added**. Verify TXT metadata and the unchanged extracted
    body, then repeat the Add action to check that no duplicate files appear.
    During another attempt, edit the draft: the result must be Needs review and
    the edit must remain untouched.

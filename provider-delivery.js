@@ -1,6 +1,6 @@
 /* Route composer preparation only to providers with a verified integration adapter.
-   Adapters attach PNG and optional metadata TXT without editing or submitting a message. */
-async function prepareInDestination(destination, capture) {
+   Adapters attach PNG and/or optional metadata TXT without editing or submitting a message. */
+async function prepareInDestination(destination, capture, options) {
   const adapters = {
     chatgpt: prepareInChatGPT,
     claude: prepareInClaude,
@@ -21,20 +21,32 @@ async function prepareInDestination(destination, capture) {
   // Hold them for the real adapter lifetime, not merely the queue's UI timeout.
   async function exclusive(name, action) {
     if (!globalThis.navigator?.locks)
-      throw new Error("Preparation coordination is unavailable. Reopen the Side Panel and retry.");
-    return navigator.locks.request(`pagerelay:${name}`, { ifAvailable: true }, (lock) => {
-      if (!lock) {
-        const error = new Error("Another preparation is using this conversation or Gemini window. Wait, then retry.");
-        error.busy = true;
-        error.needsReview = false;
-        throw error;
-      }
-      return action();
-    });
+      throw new Error(
+        "Preparation coordination is unavailable. Reopen the Side Panel and retry.",
+      );
+    return navigator.locks.request(
+      `pagerelay:${name}`,
+      { ifAvailable: true },
+      (lock) => {
+        if (!lock) {
+          const error = new Error(
+            "Another preparation is using this conversation or Gemini window. Wait, then retry.",
+          );
+          error.busy = true;
+          error.needsReview = false;
+          throw error;
+        }
+        return action();
+      },
+    );
   }
   const conversation = AIProviders.match(destination.url)?.conversation;
   const key = `${!!destination.incognito}:${destination.providerId}:${conversation ? destination.url : destination.id}`;
-  return exclusive(`conversation:${key}`, () => destination.providerId === "gemini"
-    ? exclusive(`gemini-window:${destination.windowId}`, () => adapter(destination, capture))
-    : adapter(destination, capture));
+  return exclusive(`conversation:${key}`, () =>
+    destination.providerId === "gemini"
+      ? exclusive(`gemini-window:${destination.windowId}`, () =>
+          adapter(destination, capture, options),
+        )
+      : adapter(destination, capture, options),
+  );
 }
