@@ -12,6 +12,7 @@ const SOURCE_PIN_MAX_AGE_MS = 15000;
 const SOURCE_LOOKUP_FAILED =
   "The tab to capture could not be identified. Open the Side Panel from the toolbar icon while a regular webpage is active, then try again.";
 const extensionOrigin = chrome.runtime.getURL("");
+let sessionPinnedAt = null;
 
 function isUsableSource(tab) {
   // Our own documents (including this panel) are not capturable webpages.
@@ -31,6 +32,7 @@ async function pinnedSourceTab() {
     Date.now() - pin.pinnedAt > SOURCE_PIN_MAX_AGE_MS
   )
     return null;
+  sessionPinnedAt = pin.pinnedAt;
   return chrome.tabs.get(pin.id).catch(() => null);
 }
 
@@ -61,7 +63,10 @@ async function resolveSourceTab() {
 // The toolbar icon is the only way to restart this session: clicking it on another tab
 // starts a fresh capture of that tab instead of surfacing the previous page's capture.
 chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === "captureSource:pinned") location.reload();
+  if (message?.type !== "captureSource:pinned") return;
+  // Ignore a repin notification belonging to the exact pin this fresh panel just loaded.
+  if (message.pinnedAt && message.pinnedAt === sessionPinnedAt) return;
+  location.reload();
 });
 
 void startPanelCapture(resolveSourceTab());

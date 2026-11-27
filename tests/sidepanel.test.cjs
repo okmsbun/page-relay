@@ -12,19 +12,43 @@ const EXTENSION_ORIGIN = "chrome-extension://abcdefghijklmnopabcdefghijklmnop/";
 const PANEL_URL = `${EXTENSION_ORIGIN}sidepanel.html`;
 
 // Runs service-worker.js against a fake toolbar click.
-function runServiceWorker() {
+function runServiceWorker({
+  sendMessageError = null,
+  openError = null,
+  contexts = undefined,
+  events = [],
+} = {}) {
   const listeners = {};
   const pinned = new Map();
+  const errors = [];
   const session = {
     set: async (items) => {
+      events.push("storage.set:start");
+      await new Promise(setImmediate);
       for (const [key, value] of Object.entries(items)) pinned.set(key, value);
+      events.push("storage.set:done");
     },
     get: async (key) => (pinned.has(key) ? { [key]: pinned.get(key) } : {}),
   };
   const opened = [];
   const messages = [];
+  const runtime = {
+    sendMessage: async (message) => {
+      events.push("runtime.sendMessage");
+      if (sendMessageError) throw sendMessageError;
+      messages.push(message);
+    },
+  };
+  if (contexts !== undefined) {
+    runtime.getContexts = async (filter) => {
+      events.push(`runtime.getContexts:${filter.windowIds.join(",")}`);
+      return contexts;
+    };
+  }
   const context = vm.createContext({
-    console,
+    console: {
+      error: (...args) => errors.push(args),
+    },
     chrome: {
       action: {
         onClicked: {
@@ -34,8 +58,14 @@ function runServiceWorker() {
         },
       },
       storage: { session },
-      runtime: { sendMessage: async (message) => messages.push(message) },
-      sidePanel: { open: async (options) => opened.push(options) },
+      runtime,
+      sidePanel: {
+        open: async (options) => {
+          events.push("sidePanel.open");
+          if (openError) throw openError;
+          opened.push(options);
+        },
+      },
     },
   });
   vm.runInContext(
@@ -45,7 +75,7 @@ function runServiceWorker() {
     ),
     context,
   );
-  return { listeners, session, opened, messages };
+  return { listeners, session, opened, messages, errors, events };
 }
 
 // Runs sidepanel-session.js the way the panel document does.
@@ -153,6 +183,64 @@ test("a toolbar click without a tab is ignored", async () => {
   await listeners.click(undefined);
   assert.equal(opened.length, 0);
   assert.equal(messages.length, 0);
+});
+
+test("opening a closed Side Panel does not log a missing-receiver error and stores pin before notifying", async () => {
+  const missingReceiver = runServiceWorker({
+    sendMessageError: new Error(
+      "Could not establish connection. Receiving end does not exist.",
+    ),
+  });
+  await missingReceiver.listeners.click({
+    id: 17,
+    windowId: 4,
+    url: "https://github.com/org/repo",
+  });
+  assert.equal(missingReceiver.opened.length, 1);
+  assert.equal(missingReceiver.errors.length, 0);
+  assert.ok(
+    missingReceiver.events.indexOf("storage.set:done") <
+      missingReceiver.events.indexOf("runtime.sendMessage"),
+    "pin is stored before notifying an open panel",
+  );
+
+  const noContext = runServiceWorker({ contexts: [] });
+  await noContext.listeners.click({
+    id: 17,
+    windowId: 4,
+    url: "https://github.com/org/repo",
+  });
+  assert.equal(noContext.opened.length, 1);
+  assert.equal(noContext.messages.length, 0);
+  assert.equal(noContext.errors.length, 0);
+
+  const realOpenFailure = runServiceWorker({
+    openError: new Error("Window not found"),
+  });
+  await realOpenFailure.listeners.click({
+    id: 17,
+    windowId: 4,
+    url: "https://github.com/org/repo",
+  });
+  assert.equal(realOpenFailure.errors.length, 1);
+  assert.match(String(realOpenFailure.errors[0][0]), /Could not open the Side Panel/);
+});
+
+test("a freshly opened panel ignores a duplicate repin message for its own pin timestamp", async () => {
+  const pinnedAt = Date.now();
+  const tabs = [{ id: 17, windowId: 2, url: "https://github.com/org/repo" }];
+  const session = await runPanelSession({
+    pin: { id: 17, windowId: 2, url: tabs[0].url, pinnedAt },
+    tabs,
+    toggles: { activeId: 17 },
+  });
+  session.listeners.message({ type: "captureSource:pinned", pinnedAt });
+  assert.equal(session.reloads(), 0);
+  session.listeners.message({
+    type: "captureSource:pinned",
+    pinnedAt: pinnedAt + 1000,
+  });
+  assert.equal(session.reloads(), 1);
 });
 
 test("the panel captures the tab that was active when it was opened", async () => {

@@ -60,7 +60,7 @@ function harness({
     windowHeight,
     windowWidth: 100,
     devicePixelRatio: scale,
-    crop,
+    crop: { ...crop },
     scrollX: 0,
     scrollY: state.y,
     regionIndex: state.regionIndex,
@@ -367,6 +367,73 @@ test("continually changing captures stop after bounded retries at the same posit
   );
   assert.equal(state.captures.length, 3);
   assert.ok(state.restored);
+});
+
+test("transient layout shrink recovers automatically with an exact full-page screenshot", async () => {
+  let shrank = false;
+  let starts = 0;
+  const { run, state } = harness({
+    height: 2350,
+    onMessage(state, message) {
+      if (message.type === "fullPageCapture:start") starts++;
+      if (!shrank && message.type === "fullPageCapture:scroll") {
+        state.height = 1800;
+        shrank = true;
+      }
+    },
+  });
+  await run("captureFullPage({id: 1, windowId: 2})");
+  assert.equal(starts, 2, "restarted cleanly once after layout shrank");
+  const canvas = state.canvases.at(-1);
+  assert.equal(canvas.height, 1800);
+  assert.equal(canvas.rows.length, 1800);
+  for (let row = 0; row < 1800; row++) assert.equal(canvas.rows[row], row);
+  assert.ok(state.restored && state.disconnected);
+});
+
+test("transient viewport/crop shift recovers automatically without corrupted seams", async () => {
+  let shifted = false;
+  let starts = 0;
+  const crop = { x: 0, y: 0, width: 80, height: 800 };
+  const { run, state } = harness({
+    height: 1600,
+    crop,
+    onMessage(_state, message) {
+      if (message.type === "fullPageCapture:start") starts++;
+      if (!shifted && message.type === "fullPageCapture:scroll") {
+        crop.x = 12;
+        shifted = true;
+      }
+    },
+  });
+  await run("captureFullPage({id: 1, windowId: 2})");
+  assert.equal(starts, 2, "restarted cleanly once after crop shifted");
+  const canvas = state.canvases.at(-1);
+  assert.equal(canvas.rows.length, 1600);
+  for (let row = 0; row < 1600; row++) assert.equal(canvas.rows[row], row);
+  assert.ok(state.restored && state.disconnected);
+});
+
+test("persistent layout instability stops after bounded retries and restores the page", async () => {
+  let starts = 0;
+  const { run, state } = harness({
+    height: 2400,
+    onMessage(state, message) {
+      if (message.type === "fullPageCapture:start") {
+        starts++;
+        state.height = 2400;
+      }
+      if (message.type === "fullPageCapture:scroll") {
+        state.height -= 300;
+      }
+    },
+  });
+  await assert.rejects(
+    run("captureFullPage({id: 1, windowId: 2})"),
+    /layout changed/,
+  );
+  assert.equal(starts, 3, "1 initial pass + 2 bounded recovery passes");
+  assert.ok(state.restored && state.disconnected);
 });
 
 test("internal scroller crops viewport offsets and stitches only main content", async () => {

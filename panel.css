@@ -13,6 +13,7 @@
   --muted: #687185;
   --accent: #4f46e5;
   --accent-hover: #4338ca;
+  --accent-text: #4338ca;
   --accent-soft: #eef2ff;
   --accent-border: #c7d2fe;
   --accent-ring: rgba(79, 70, 229, 0.28);
@@ -45,6 +46,7 @@
     --muted: #8b93a7;
     --accent: #6366f1;
     --accent-hover: #7477f7;
+    --accent-text: #a5b4fc;
     --accent-soft: rgba(99, 102, 241, 0.16);
     --accent-border: rgba(129, 140, 248, 0.35);
     --accent-ring: rgba(129, 140, 248, 0.38);
@@ -156,63 +158,50 @@ h1 {
   color: var(--text);
 }
 
-.session-badge {
+.recapture-button {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 550;
-  letter-spacing: -0.01em;
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-
-.session-badge::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-body[data-state="idle"] .session-badge {
-  display: none;
-}
-
-body[data-state="capturing"] .session-badge {
-  color: var(--accent);
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  flex-shrink: 0;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-md);
   background: var(--accent-soft);
-  border-color: var(--accent-border);
+  color: var(--accent-text);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  box-shadow: var(--shadow-xs);
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.12s;
 }
 
-body[data-state="capturing"] .session-badge::before {
-  animation: pulse 1.2s ease-in-out infinite;
+.recapture-button .recapture-icon {
+  width: 15px;
+  height: 15px;
 }
 
-body[data-state="capturing"] .session-badge::after {
-  content: "Capturing";
+.recapture-button:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
 }
 
-body[data-state="success"] .session-badge {
-  color: var(--success);
-  background: var(--success-bg);
-  border-color: var(--success-border);
+.recapture-button:active:not(:disabled) {
+  transform: translateY(0.5px);
 }
 
-body[data-state="success"] .session-badge::after {
-  content: "Captured";
+.recapture-button:disabled {
+  background: var(--surface-subtle);
+  border-color: var(--line);
+  color: var(--muted);
+  box-shadow: none;
+  cursor: default;
 }
 
-body[data-state="error"] .session-badge {
-  color: var(--error);
-  background: var(--error-bg);
-  border-color: var(--error-border);
-}
-
-body[data-state="error"] .session-badge::after {
-  content: "Error";
+.recapture-button[data-capturing="true"] .recapture-icon {
+  animation: pulse 1.1s ease-in-out infinite;
 }
 
 .capture-status,
@@ -380,17 +369,6 @@ body[data-state="error"] #statusTitle {
   gap: 8px;
   padding: 8px 10px 8px 12px;
   border-bottom: 1px solid var(--line);
-}
-
-.preview-toolbar-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.recapture-button[data-capturing="true"] .recapture-icon {
-  animation: pulse 1.1s ease-in-out infinite;
 }
 
 .preview-label {
@@ -818,7 +796,7 @@ body:has(#destinations:not([hidden])) .page-text[open] #textPreview {
   padding: 0 3.5px;
   border-radius: 999px;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 9.5px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;

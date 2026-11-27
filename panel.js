@@ -7,6 +7,8 @@ const preview = document.getElementById("preview");
 const CAPTURE_INTERVAL_MS = 550;
 const BOTTOM_WAIT_MS = 1500;
 const MAX_CAPTURE_SEGMENTS = 200;
+const MAX_LAYOUT_RETRIES = 2;
+const LAYOUT_RETRY_SETTLE_MS = 600;
 // Leave headroom for Chrome's canvas limits and memory, especially on Retina screens.
 const MAX_CANVAS_SIDE = 32767;
 const MAX_CANVAS_PIXELS = 64 * 1024 * 1024;
@@ -55,6 +57,15 @@ function sameViewport(a, b) {
     a.scrollX === b.scrollX &&
     a.scrollY === b.scrollY
   );
+}
+
+function layoutChangedError(
+  message = "The page layout changed during capture. Wait for it to settle and retry.",
+) {
+  const error = new Error(message);
+  error.layoutChanged = true;
+  error.expected = true;
+  return error;
 }
 
 function checkCanvasSize(width, height) {
@@ -116,9 +127,7 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       !sameGeometry(initial, before) ||
       before.documentHeight < previousHeight
     ) {
-      throw new Error(
-        "The page layout changed during capture. Wait for it to settle and retry.",
-      );
+      throw layoutChangedError();
     }
 
     const [activeTab] = await chrome.tabs.query({
@@ -187,7 +196,7 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       cropWidth !== canvas.width ||
       cropHeight !== capturedCropHeight
     ) {
-      throw new Error(
+      throw layoutChangedError(
         "The viewport size changed during capture. Please retry.",
       );
     }
@@ -200,8 +209,7 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       Math.abs(before.scrollY + before.viewportHeight - before.documentHeight) <= 1;
     const height = atEnd ? segmentTop + cropHeight :
       Math.round(before.documentHeight * scaleY);
-    if (height < coveredPixels)
-      throw new Error("The page layout changed during capture. Wait for it to settle and retry.");
+    if (height < coveredPixels) throw layoutChangedError();
     if (height !== canvas.height) {
       checkCanvasSize(canvas.width, height);
       // Preserve all covered rows on lazy growth or the final raster-boundary
@@ -266,63 +274,85 @@ async function captureFullPage(tab) {
     frameId: 0,
   });
   try {
-    const initial = await sendToPage(tab.id, { type: "fullPageCapture:start" });
-    const session = { captures: 0 };
-    const panels = [];
-    let pixels = 0;
-    try {
-      for (
-        let index = 0;
-        index < Math.max(1, initial.regions?.length || 0);
-        index++
-      ) {
-        const metrics =
-          index === 0
-            ? initial
-            : await sendToPage(tab.id, {
-                type: "fullPageCapture:select",
-                index,
-              });
-        if (
-          metrics.windowWidth !== initial.windowWidth ||
-          metrics.windowHeight !== initial.windowHeight ||
-          JSON.stringify(metrics.regions) !== JSON.stringify(initial.regions)
-        ) {
-          throw new Error(
-            "The application layout changed during capture. Please retry.",
-          );
-        }
-        const canvas = await capturePass(tab, metrics, session);
-        panels.push({
-          canvas,
-          crop: metrics.crop,
-          background: initial.regions?.[index]?.background,
-        });
-        pixels += canvas.width * canvas.height;
-        if (pixels > MAX_CANVAS_PIXELS)
-          throw new Error(
-            "The combined scrolling areas are too large to capture safely.",
-          );
-      }
-      document.getElementById("statusTitle").textContent = "Finishing capture…";
-      const resultCanvas = initial.regions?.length
-        ? composeApplicationScreenshot(session.shell, panels, initial)
-        : panels[0].canvas;
+    for (let attempt = 0; attempt <= MAX_LAYOUT_RETRIES; attempt++) {
+      const session = { captures: 0 };
+      const panels = [];
       try {
-        const result = resultCanvas.toDataURL("image/png");
-        if (!result.startsWith("data:image/png"))
-          throw new Error("Chrome could not encode a PNG of this size.");
-        const pageText = await sendToPage(tab.id, {
-          type: "fullPageCapture:text",
+        const initial = await sendToPage(tab.id, {
+          type: "fullPageCapture:start",
         });
-        return { screenshot: result, ...pageText };
+        let pixels = 0;
+        for (
+          let index = 0;
+          index < Math.max(1, initial.regions?.length || 0);
+          index++
+        ) {
+          const metrics =
+            index === 0
+              ? initial
+              : await sendToPage(tab.id, {
+                  type: "fullPageCapture:select",
+                  index,
+                });
+          if (
+            metrics.windowWidth !== initial.windowWidth ||
+            metrics.windowHeight !== initial.windowHeight ||
+            JSON.stringify(metrics.regions) !== JSON.stringify(initial.regions)
+          ) {
+            throw layoutChangedError(
+              "The application layout changed during capture. Please retry.",
+            );
+          }
+          const canvas = await capturePass(tab, metrics, session);
+          panels.push({
+            canvas,
+            crop: metrics.crop,
+            background: initial.regions?.[index]?.background,
+          });
+          pixels += canvas.width * canvas.height;
+          if (pixels > MAX_CANVAS_PIXELS)
+            throw new Error(
+              "The combined scrolling areas are too large to capture safely.",
+            );
+        }
+        document.getElementById("statusTitle").textContent = "Finishing capture…";
+        const resultCanvas = initial.regions?.length
+          ? composeApplicationScreenshot(session.shell, panels, initial)
+          : panels[0].canvas;
+        try {
+          const result = resultCanvas.toDataURL("image/png");
+          if (!result.startsWith("data:image/png"))
+            throw new Error("Chrome could not encode a PNG of this size.");
+          const pageText = await sendToPage(tab.id, {
+            type: "fullPageCapture:text",
+          });
+          return { screenshot: result, ...pageText };
+        } finally {
+          if (resultCanvas !== panels[0].canvas)
+            resultCanvas.width = resultCanvas.height = 0;
+        }
+      } catch (error) {
+        if (!error?.layoutChanged || attempt >= MAX_LAYOUT_RETRIES) throw error;
+        for (const panel of panels) {
+          panel.canvas.width = panel.canvas.height = 0;
+        }
+        session.shell = null;
+        progressValue = 0;
+        const fill = document.getElementById("progressFill");
+        if (fill?.style) fill.style.width = "0%";
+        const statusTitle = document.getElementById("statusTitle");
+        const statusDetail = document.getElementById("statusDetail");
+        if (statusTitle) statusTitle.textContent = "Waiting for page to settle…";
+        if (statusDetail)
+          statusDetail.textContent = `The page layout shifted. Retrying (${attempt + 1}/${MAX_LAYOUT_RETRIES})…`;
+        await sendToPage(tab.id, {
+          type: "fullPageCapture:settle",
+          minimumWait: LAYOUT_RETRY_SETTLE_MS,
+        }).catch(() => delay(LAYOUT_RETRY_SETTLE_MS));
       } finally {
-        if (resultCanvas !== panels[0].canvas)
-          resultCanvas.width = resultCanvas.height = 0;
+        // Drop the viewport image before restoring the page.
+        session.shell = null;
       }
-    } finally {
-      // Drop the viewport image before restoring the page.
-      session.shell = null;
     }
   } finally {
     try {
@@ -390,16 +420,34 @@ function protectedPageError() {
   return error;
 }
 
+function isPermissionError(error) {
+  const message = String(error?.message ?? error ?? "");
+  return /cannot access|cannot be scripted|permission/i.test(message);
+}
+
+function isProtectedError(error) {
+  const message = String(error?.message ?? error ?? "");
+  return Boolean(
+    error?.protectedPage ||
+      /chrome:\/\/|chrome-extension:\/\/|extensions gallery|webstore/i.test(
+        message,
+      ),
+  );
+}
+
+function isExpectedCaptureError(error) {
+  if (error?.expected || isProtectedError(error) || isPermissionError(error))
+    return true;
+  const message = String(error?.message ?? error ?? "");
+  return /active tab changed|keep the captured tab active|layout changed|viewport size changed|keeps changing|still loading|too large|too long|could not be identified|no longer open|scrolling area|cancelled/i.test(
+    message,
+  );
+}
+
 function friendlyError(error) {
   const message = String(error?.message ?? error ?? "");
-  if (
-    error?.protectedPage ||
-    /chrome:\/\/|chrome-extension:\/\/|extensions gallery|webstore/i.test(
-      message,
-    )
-  )
-    return PROTECTED_PAGE_MESSAGE;
-  if (/cannot access|cannot be scripted|permission/i.test(message))
+  if (isProtectedError(error)) return PROTECTED_PAGE_MESSAGE;
+  if (isPermissionError(error))
     return "Chrome blocked access to this page’s content, so nothing was captured.";
   return message || "Something interrupted the capture. Please try again.";
 }
@@ -426,6 +474,7 @@ const recaptureButton = document.getElementById("recapturePage");
 let captureStarted = false;
 let capturing = false;
 let captureSourceTab = null;
+let canRetrySource = false;
 
 function isDestinationBusy() {
   return typeof destinationUI !== "undefined" && destinationUI.isBusy?.() === true;
@@ -433,8 +482,10 @@ function isDestinationBusy() {
 
 function updateRecaptureButton() {
   if (!recaptureButton) return;
+  const visible = Boolean(capturedPage || canRetrySource);
+  recaptureButton.hidden = !visible;
   recaptureButton.disabled =
-    capturing || !captureSourceTab || isDestinationBusy();
+    !visible || capturing || !captureSourceTab || isDestinationBusy();
   if (capturing) recaptureButton.dataset.capturing = "true";
   else delete recaptureButton.dataset.capturing;
 }
@@ -442,24 +493,69 @@ function updateRecaptureButton() {
 if (typeof destinationUI !== "undefined")
   destinationUI.onBusyChange?.(updateRecaptureButton);
 
-async function resolveRecaptureTab() {
-  if (!captureSourceTab?.id)
-    throw new Error("The tab to capture could not be identified.");
-  if (chrome?.tabs?.get) {
-    const latest = await chrome.tabs
-      .get(captureSourceTab.id)
-      .catch(() => null);
-    if (!latest?.id)
-      throw new Error("The captured source tab is no longer open.");
-    if (latest.active === false)
-      throw new Error("Switch back to the source tab, then click Recapture.");
-    return Object.freeze({
-      id: latest.id,
-      windowId: latest.windowId,
-      url: latest.url ?? "",
-    });
+async function waitForActiveTab(tabId, windowId, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const [active] = await chrome.tabs
+      .query({ active: true, windowId })
+      .catch(() => []);
+    if (active?.id === tabId) return true;
+    await delay(50);
   }
-  return captureSourceTab;
+  return false;
+}
+
+async function resolveRecaptureTab() {
+  if (!captureSourceTab?.id) {
+    const error = new Error("The tab to capture could not be identified.");
+    error.expected = true;
+    throw error;
+  }
+  if (!chrome?.tabs?.get) return captureSourceTab;
+  let latest = await chrome.tabs.get(captureSourceTab.id).catch(() => null);
+  if (!latest?.id) {
+    const error = new Error("The captured source tab is no longer open.");
+    error.expected = true;
+    throw error;
+  }
+  if (latest.active === false) {
+    try {
+      if (chrome.windows?.update) {
+        await chrome.windows
+          .update(latest.windowId, { focused: true })
+          .catch(() => {});
+      }
+      if (chrome.tabs?.update) {
+        await chrome.tabs.update(latest.id, { active: true });
+      } else {
+        throw new Error("Tab activation is unavailable.");
+      }
+      if (chrome.tabs?.query) {
+        const activated = await waitForActiveTab(latest.id, latest.windowId);
+        if (!activated) throw new Error("Tab did not become active.");
+      }
+      // Allow the activated tab to paint before captureVisibleTab runs.
+      await delay(120);
+      latest = await chrome.tabs.get(latest.id).catch(() => null);
+      if (!latest?.id) {
+        const error = new Error("The captured source tab is no longer open.");
+        error.expected = true;
+        throw error;
+      }
+    } catch (cause) {
+      if (cause?.expected) throw cause;
+      const error = new Error(
+        "Could not switch back to the source tab automatically. Activate it, then click Recapture.",
+      );
+      error.expected = true;
+      throw error;
+    }
+  }
+  return Object.freeze({
+    id: latest.id,
+    windowId: latest.windowId,
+    url: latest.url ?? "",
+  });
 }
 
 async function runPanelCapture(sourceTab) {
@@ -484,15 +580,21 @@ async function runPanelCapture(sourceTab) {
   );
   try {
     const tab = await sourceTab;
-    if (!tab?.id)
-      throw new Error("The tab to capture could not be identified.");
+    if (!tab?.id) {
+      const error = new Error("The tab to capture could not be identified.");
+      error.expected = true;
+      throw error;
+    }
     captureSourceTab = Object.freeze({
       id: tab.id,
       windowId: tab.windowId,
       url: tab.url ?? "",
     });
+    canRetrySource = !isProtectedPageUrl(tab.url);
+    updateRecaptureButton();
     const result = await captureFullPage(tab);
     capturedPage = result;
+    canRetrySource = true;
     preview.src = result.screenshot;
     showTextStats(result);
     document.getElementById("textPreview").textContent =
@@ -511,13 +613,18 @@ async function runPanelCapture(sourceTab) {
     setStatus("success", "", "");
     await destinationUI.show(result);
   } catch (error) {
-    console.error(error);
+    if (!isExpectedCaptureError(error)) console.error(error);
     if (!capturedPage) {
       document.querySelector("#emptyState h2").textContent =
         "Preview unavailable";
+      if (isProtectedError(error) || isPermissionError(error))
+        canRetrySource = false;
     }
-    const recovery = capturedPage
-      ? "Switch back to the source tab and click Recapture, or reopen the Side Panel from the toolbar icon."
+    const canRecaptureNow = Boolean(
+      captureSourceTab && (capturedPage || canRetrySource),
+    );
+    const recovery = canRecaptureNow
+      ? "Click Recapture to try again, or reopen the Side Panel from the toolbar icon."
       : "Close the Side Panel, then reopen it using the extension toolbar icon to retry.";
     setStatus("error", "Couldn’t capture this page", `${friendlyError(error)} ${recovery}`);
     document.getElementById("pageText").hidden = !capturedPage;

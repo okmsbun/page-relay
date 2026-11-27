@@ -34,12 +34,15 @@ failure, never as a page Chrome protects. The same panel document remains open
 across tab switches and navigation; its screenshot, text, selections, Busy and
 preparation results remain in memory. Keep the source tab active and avoid
 resizing the panel until capture finishes; `captureVisibleTab` cannot capture a
-background tab. After capture, browse freely. Click **Recapture** in the screenshot toolbar to
-capture the pinned source tab again without reopening the panel (keep the source
-tab active; recapture replaces the screenshot/text, resets delivery statuses and
-duplicate protection, and re-applies default conversation selection). Closing/recreating
-the panel starts a fresh session; captures are not saved to disk or restored across
-browser restarts.
+background tab. After capture, browse freely. Click **Recapture** in the panel header to
+capture the pinned source tab again without reopening the panel (if the source
+tab is in the background, Page Relay switches back to it automatically before
+capturing; recapture replaces the screenshot/text, resets delivery statuses and
+duplicate protection, and re-applies default conversation selection). Recapture
+also remains available after a retryable initial capture error. Transient page
+layout shifts trigger up to two clean, bounded recovery retries after settling.
+Closing/recreating the panel starts a fresh session; captures are not saved to
+disk or restored across browser restarts.
 
 ### Permissions
 
