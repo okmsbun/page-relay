@@ -732,12 +732,29 @@ function pageHarness({
   continuousMutations = false,
 } = {}) {
   const state = { time: 0, scrollX: 12, scrollY: 177 };
+  const windowListeners = new Map();
+  const documentListeners = new Map();
+  const makeEmitter = (map) => ({
+    addEventListener(type, fn) {
+      if (!map.has(type)) map.set(type, new Set());
+      map.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      map.get(type)?.delete(fn);
+    },
+    emit(type, event) {
+      for (const fn of [...(map.get(type) || [])]) fn(event);
+    },
+  });
+  const winEmitter = makeEmitter(windowListeners);
+  const docEmitter = makeEmitter(documentListeners);
   function element() {
     const properties = new Map();
     return {
       scrollHeight: 2000,
       offsetHeight: 2000,
       clientHeight: 800,
+      clientWidth: 100,
       style: {
         [Symbol.iterator]: () => properties.keys(),
         getPropertyValue: (key) => properties.get(key)?.value || "",
@@ -757,10 +774,38 @@ function pageHarness({
     ...state,
     innerWidth: 100,
     innerHeight: 800,
+    addEventListener: winEmitter.addEventListener,
+    removeEventListener: winEmitter.removeEventListener,
     scrollTo({ left, top }) {
       this.scrollX = left;
       this.scrollY = top;
+      docEmitter.emit("scroll", { target: document });
     },
+  };
+  const document = {
+    documentElement: root,
+    body,
+    addEventListener: docEmitter.addEventListener,
+    removeEventListener: docEmitter.removeEventListener,
+    querySelectorAll: () => [root, body],
+    fonts: {
+      get status() {
+        return state.time < fontsReadyAt ? "loading" : "loaded";
+      },
+    },
+    images: [
+      {
+        get complete() {
+          return state.time >= imageReadyAt;
+        },
+        getBoundingClientRect: () => ({
+          top: 0,
+          bottom: 100,
+          left: 0,
+          right: 100,
+        }),
+      },
+    ],
   };
   const context = vm.createContext({
     window,
@@ -786,29 +831,7 @@ function pageHarness({
       observe() {}
       disconnect() {}
     },
-    document: {
-      documentElement: root,
-      body,
-      querySelectorAll: () => [root, body],
-      fonts: {
-        get status() {
-          return state.time < fontsReadyAt ? "loading" : "loaded";
-        },
-      },
-      images: [
-        {
-          get complete() {
-            return state.time >= imageReadyAt;
-          },
-          getBoundingClientRect: () => ({
-            top: 0,
-            bottom: 100,
-            left: 0,
-            right: 100,
-          }),
-        },
-      ],
-    },
+    document,
     chrome: {
       runtime: {
         onMessage: {
@@ -828,13 +851,17 @@ function pageHarness({
     fs.readFileSync(path.join(__dirname, "../content.js"), "utf8"),
     context,
   );
-  const send = (action) =>
+  const send = (action, extra = {}) =>
     new Promise((resolve, reject) =>
-      handler({ type: `fullPageCapture:${action}` }, {}, (response) =>
-        response.ok
-          ? resolve(response.result)
-          : reject(new Error(response.error)),
-      ),
+      handler({ type: `fullPageCapture:${action}`, ...extra }, {}, (response) => {
+        if (response.ok) resolve(response.result);
+        else {
+          const error = new Error(response.error);
+          if (response.code) error.code = response.code;
+          if (response.detail) error.detail = response.detail;
+          reject(error);
+        }
+      }),
     );
   let disconnect;
   connection({
@@ -845,7 +872,21 @@ function pageHarness({
       },
     },
   });
-  return { state, root, window, send, disconnect: () => disconnect() };
+  return {
+    state,
+    root,
+    window,
+    document,
+    emitWindow: winEmitter.emit,
+    emitDocument: docEmitter.emit,
+    listenerCount: () =>
+      [...windowListeners.values(), ...documentListeners.values()].reduce(
+        (sum, set) => sum + set.size,
+        0,
+      ),
+    send,
+    disconnect: () => disconnect(),
+  };
 }
 
 test("content script waits for visible images, fonts and a quiet interval", async () => {
@@ -892,4 +933,91 @@ test("continuous non-layout DOM mutations settle cleanly once layout and resourc
     `expected bounded layout-stable settle, got ${state.time}ms`,
   );
   await send("restore");
+});
+
+test("manual wheel, keyboard, and scrollbar scrolling interrupt capture cleanly without false positives", async () => {
+  for (const [kind, trigger] of [
+    [
+      "wheel",
+      (h) => {
+        h.emitWindow("wheel", { isTrusted: true, deltaY: 120, deltaX: 0 });
+        h.window.scrollY = 180;
+        h.emitDocument("scroll", { target: h.document });
+      },
+    ],
+    [
+      "keydown",
+      (h) => {
+        h.emitWindow("keydown", {
+          isTrusted: true,
+          key: "PageDown",
+          target: h.document.body,
+        });
+        h.window.scrollY = 400;
+        h.emitDocument("scroll", { target: h.document });
+      },
+    ],
+    [
+      "scrollbar",
+      (h) => {
+        h.emitWindow("pointerdown", {
+          isTrusted: true,
+          clientX: 99,
+          clientY: 200,
+        });
+        h.window.scrollY = 300;
+        h.emitDocument("scroll", { target: h.document });
+      },
+    ],
+  ]) {
+    const h = pageHarness({ imageReadyAt: 0, fontsReadyAt: 0 });
+    await h.send("start");
+    assert.ok(h.listenerCount() > 0, "passive scroll listeners installed during capture");
+    trigger(h);
+    await assert.rejects(
+      h.send("measure"),
+      (error) =>
+        error.code === "USER_SCROLL_INTERRUPTED" &&
+        error.detail === kind &&
+        /manually scrolled/i.test(error.message),
+    );
+    await h.send("restore");
+    assert.equal(h.listenerCount(), 0, "scroll listeners cleaned up after restore");
+  }
+
+  // Programmatic scrolls, untrusted events, or wheel input without scroll movement do not trigger false interruptions.
+  const h = pageHarness({ imageReadyAt: 0, fontsReadyAt: 0 });
+  await h.send("start");
+  await h.send("scroll", { scrollY: 600 });
+  h.emitWindow("wheel", { isTrusted: false, deltaY: 100, deltaX: 0 });
+  h.window.scrollY = 650;
+  h.emitDocument("scroll", { target: h.document });
+  await h.send("measure");
+  h.emitWindow("wheel", { isTrusted: true, deltaY: -100, deltaX: 0 });
+  await h.send("scroll", { scrollY: 900 });
+  await h.send("restore");
+  assert.equal(h.listenerCount(), 0);
+});
+
+test("manual scroll interruption does not trigger layout retries in captureFullPage", async () => {
+  let starts = 0;
+  const { run, state } = harness({
+    height: 2400,
+    onMessage(_state, message) {
+      if (message.type === "fullPageCapture:start") starts++;
+      if (message.type === "fullPageCapture:scroll") {
+        const error = new Error("The page was manually scrolled during capture.");
+        error.interrupted = true;
+        error.interruptionReason = "manual-scroll";
+        error.expected = true;
+        throw error;
+      }
+    },
+  });
+  await assert.rejects(
+    run("captureFullPage({id: 1, windowId: 2})"),
+    (error) => error.interrupted === true && error.interruptionReason === "manual-scroll",
+  );
+  assert.equal(starts, 1, "manual scroll interruption fails fast without retrying");
+  assert.ok(state.restored && state.disconnected);
 });

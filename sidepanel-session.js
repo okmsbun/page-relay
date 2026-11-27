@@ -57,6 +57,7 @@ async function resolveSourceTab() {
     id: tab.id,
     windowId: tab.windowId,
     url: tab.url ?? "",
+    title: tab.title ?? "",
   });
 }
 

@@ -23,6 +23,13 @@
     const html = await (await fetch("../sidepanel.html")).text();
     const base = new URL("../", location.href).href;
     let sourceId = 1, captureCalls = [], captureSerial = 0, queries = 0, fail = false, discoveryFails = false, sourcePin = null, sourceActive = true, activationFails = false, transientActivationFails = 0, activatedTabs = [], consoleErrors = [];
+    const tabMap = new Map([
+      [1, { id: 1, windowId: 2, url: "https://github.com/org/repo", title: "org/repo", active: true }],
+      [5, { id: 5, windowId: 2, url: "https://github.com/org/repo", title: "org/repo", active: true }],
+      [7, { id: 7, windowId: 2, url: "https://docs.example.com/guide", title: "Guide Docs", active: false }],
+      [8, { id: 8, windowId: 2, url: "chrome://extensions", title: "Extensions", active: false }],
+    ]);
+    let activeTabInWindow = 1;
     const chats = [
       { id: 10, windowId: 2, index: 1, title: "Extension debugging", url: "https://chatgpt.com/c/one", status: "complete", incognito: false },
       { id: 11, windowId: 3, index: 0, title: "Other discussion", url: "https://chatgpt.com/c/two", status: "complete", incognito: false },
@@ -41,18 +48,38 @@
     const pngUpdated = image.toDataURL();
     // Fixtures install mocks before the real sidepanel-session.js runs.
     window.configurePanelFixture = (win) => {
-      const sourceTab = (id) => ({ id, windowId: 2, url: "https://github.com/org/repo", active: sourceActive });
+      const tabListeners = { activated: [], updated: [] };
+      win.__emitTabActivated = (tabId, windowId = 2) => {
+        activeTabInWindow = tabId;
+        sourceActive = tabId === sourceId;
+        for (const [id, entry] of tabMap) entry.active = id === tabId;
+        for (const listener of tabListeners.activated) listener({ tabId, windowId });
+      };
+      win.__emitTabUpdated = (tabId, changeInfo) => {
+        const entry = tabMap.get(tabId);
+        if (entry) Object.assign(entry, changeInfo);
+        for (const listener of tabListeners.updated) listener(tabId, changeInfo, entry);
+      };
+      const sourceTab = (id) => {
+        const stored = tabMap.get(id);
+        if (stored) return { ...stored, active: id === activeTabInWindow && sourceActive };
+        return { id, windowId: 2, url: "https://github.com/org/repo", title: "org/repo", active: sourceActive };
+      };
       win.console = { ...win.console, error: (...args) => consoleErrors.push(args) };
       win.chrome = {
         tabs: {
+          onActivated: { addListener: (fn) => tabListeners.activated.push(fn) },
+          onUpdated: { addListener: (fn) => tabListeners.updated.push(fn) },
           query: async (options) => {
             if (options.url) { if (discoveryFails) throw new Error("Test discovery error"); return chats; }
             if (sourceActive) {
               queries++;
               assert(options.windowId === 2, "capture source queried in the panel's own window");
-              return [sourceTab(sourceId)];
+              return [sourceTab(activeTabInWindow)];
             }
-            return [{ id: 999, windowId: 2, url: "https://chatgpt.com/c/other", active: true }];
+            const active = tabMap.get(activeTabInWindow);
+            if (active && activeTabInWindow !== sourceId) return [{ ...active, active: true }];
+            return [{ id: 999, windowId: 2, url: "https://chatgpt.com/c/other", title: "Other chat", active: true }];
           },
           get: async (id) => chats.find((tab) => tab.id === id) ?? sourceTab(id),
           update: async (id, options) => {
@@ -63,6 +90,7 @@
             if (activationFails) throw new Error("Tab cannot be activated");
             if (options.active) {
               activatedTabs.push(id);
+              activeTabInWindow = id;
               sourceActive = true;
               sourceId = id;
             }
@@ -71,7 +99,8 @@
         }, scripting: { executeScript: async () => [{}] },
         storage: { session: { get: async (key) => (sourcePin ? { [key]: sourcePin } : {}) } },
         runtime: { getURL: (file) => `chrome-extension://testextensionid/${file}`, onMessage: { addListener: (listener) => { win.__onPanelMessage = listener; } } },
-        windows: { getCurrent: async () => ({ id: 2 }), update: async () => ({ id: 2 }) }, extension: { isAllowedIncognitoAccess: async () => true }
+        windows: { getCurrent: async () => ({ id: 2 }), update: async () => ({ id: 2 }), onFocusChanged: { addListener: () => {} } },
+        extension: { isAllowedIncognitoAccess: async () => true }
       };
       win.captureFullPage = async (tab) => {
         captureCalls.push(tab.id);
@@ -79,13 +108,14 @@
         win.showProgress(0, 1, 0.5, 2);
         win.showTextStats({ characters: 400, estimatedTokens: 100 });
         await wait(150);
+        if (fail === "interrupted") throw Object.assign(new Error("The page was manually scrolled during capture. Please keep the page still while capturing to ensure a complete screenshot."), { interrupted: true, interruptionReason: "manual-scroll", expected: true });
         if (fail === "layout") throw Object.assign(new Error("The page layout changed during capture. Wait for it to settle and retry."), { layoutChanged: true, diagnostic: { reason: "geometry-changed", diffs: ["viewportHeight: 800 -> 720"] } });
         if (fail === "unsupported") throw Object.assign(new Error("Full-page capture is unavailable on this type of page."), { unsupportedPage: true, expected: true });
         if (fail === "permission") throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
         if (fail) throw new Error("Cannot access a chrome:// URL");
         return current > 1
-          ? { screenshot: pngUpdated, text: "Updated capture text #" + current + "\nRevenue", characters: 31, estimatedTokens: 9 }
-          : { screenshot: png, text: "Hello <script>plain text<\/script>\nRevenue\nRevenue", characters: 49, estimatedTokens: 13 };
+          ? { screenshot: pngUpdated, text: "Updated capture text #" + current + "\nRevenue", characters: 31, estimatedTokens: 9, url: tab.url, title: tab.title }
+          : { screenshot: png, text: "Hello <script>plain text<\/script>\nRevenue\nRevenue", characters: 49, estimatedTokens: 13, url: tab.url, title: tab.title };
       };
     };
     async function openPanel() {
@@ -103,6 +133,7 @@
       assert(!doc.getElementById("takeScreenshot"), "no initial capture button");
       assert(doc.getElementById("previewToolbar").hidden, "recapture toolbar hidden during initial capture");
       assert(doc.body.dataset.state === "capturing", "capture starts automatically on open");
+      assert(doc.getElementById("statusDetail").textContent.includes("avoid scrolling"), "capturing guidance asks user to avoid scrolling");
       assert(doc.getElementById("destinations").hidden, "adding unavailable while capturing");
       assert(!doc.getElementById("captureProgress").hidden, "progress visible");
       assert(doc.getElementById("textCharacters").textContent === "400 chars", "live character count visible");
@@ -112,6 +143,8 @@
       await wait(220);
       assert(captureCalls.join(",") === "1" && queries === 1, "source pinned once and duplicate startup ignored");
       assert(doc.body.dataset.state === "success", "automatic capture completes");
+      assert(!doc.getElementById("sourceBar").hidden && doc.getElementById("sourcePage").textContent.includes("github.com"), "source bar displays the current capture source");
+      assert(doc.getElementById("captureActiveTab").hidden, "Capture this tab stays hidden while on the current source tab");
       const includePageText = doc.getElementById("includePageText");
       assert(!includePageText.checked, "page text attachment defaults off");
       assert(doc.getElementById("emptyState").hidden && !doc.getElementById("previewViewport").hidden, "preview replaces placeholder");
@@ -153,7 +186,7 @@
       chooseProvider("chatgpt");
       assert(doc.getElementById("recapturePage") && !doc.getElementById("recapturePage").disabled, "recapture button is ready after capture");
       assert(doc.getElementById("destination-10").checked && !doc.getElementById("destination-11").checked, "first eligible conversation is selected by default");
-      assert(!doc.getElementById("sendCapture").disabled && doc.getElementById("sendCapture").textContent === "Add to 1 chat", "Add to 1 chat is enabled immediately after capture");
+      assert(!doc.getElementById("sendCapture").disabled && doc.getElementById("sendCapture").textContent === "Add screenshot", "Add screenshot is enabled immediately after capture");
       const row = doc.getElementById("destination-10").closest(".destination-row");
       clickPoint(row, 0.97, 0.5);
       assert(!doc.getElementById("destination-10").checked && doc.getElementById("sendCapture").disabled, "user can deselect the default conversation");
@@ -188,7 +221,7 @@
       doc.getElementById("refreshDestinations").click(); await wait(30);
       doc.getElementById("destination-13").click();
       chooseProvider("chatgpt"); doc.getElementById("destination-11").click();
-      assert(doc.getElementById("sendCapture").textContent === "Add to 3 chats", "add count includes hidden providers");
+      assert(doc.getElementById("sendCapture").textContent === "Add screenshot to 3 chats", "add count includes hidden providers");
       assert(doc.querySelector("#provider-claude .provider-count").textContent === "1", "hidden provider selection count remains visible");
       const badge = doc.querySelector("#provider-claude .provider-count");
       clickPoint(badge.closest("button"), 0.9, 0.5);
@@ -198,21 +231,22 @@
       search.value = "Extension"; search.dispatchEvent(new win.Event("input"));
       assert(doc.querySelectorAll(".destination-row").length === 1, "search filters active provider without discarding selection");
       const deliveries = [];
-      win.eval("destinationUI").configurePreparation(async (destination, capture) => {
-        deliveries.push(destination.id);
+      win.eval("destinationUI").configurePreparation(async (destination, capture, options) => {
+        deliveries.push({ id: destination.id, ...options });
         assert(capture.screenshot === png && capture.text.includes("Revenue"), "identical screenshot and text added");
         assert(capture.includeText === true, "toggle enables TXT without a second capture");
         if (destination.id === 11) throw new Error("Test failure");
-        return { prepared: true };
+        return { prepared: true, delivered: [...(options?.includePng ? ["png"] : []), ...(options?.includeText ? ["txt"] : [])] };
       });
       assert(deliveries.length === 0, "selection alone never adds anything");
       includePageText.click();
+      assert(doc.getElementById("sendCapture").textContent === "Add screenshot and text to 3 chats", "enabling page text updates primary CTA label");
       assert(captureCalls.join(",") === "1", "enabling page text does not recapture");
       doc.getElementById("sendCapture").click(); await wait(60);
-      assert(deliveries.slice().sort((a, b) => a - b).join(",") === "10,11,13", "add includes selected conversations on hidden provider tabs");
+      assert(deliveries.map((d) => d.id).sort((a, b) => a - b).join(",") === "10,11,13", "add includes selected conversations on hidden provider tabs");
       assert(doc.getElementById("destinationNote").textContent === "2 added to a chat draft · 1 failed", "partial results summarized across providers");
       chooseProvider("claude");
-      assert(doc.querySelector(".destination-feedback.prepared"), "hidden provider result retained");
+      assert(doc.querySelector(".destination-feedback.prepared").textContent === "Screenshot and text added", "hidden provider result retained with clear attachment label");
       chooseProvider("chatgpt");
       assert(doc.querySelector(".destination-feedback.failed") && doc.querySelector(".destination-feedback.prepared"), "independent results preserved");
       const protectedRow = doc.getElementById("destination-10").closest(".destination-row");
@@ -225,14 +259,14 @@
       const refresh = async () => { doc.getElementById("refreshDestinations").click(); await wait(30); };
       let generating = true;
       const retryCalls = [];
-      win.eval("destinationUI").configurePreparation(async (destination) => {
-        retryCalls.push(destination.id);
+      win.eval("destinationUI").configurePreparation(async (destination, _cap, options) => {
+        retryCalls.push({ id: destination.id, ...options });
         if (destination.id === 11 && generating) throw Object.assign(new Error("Generating a response. Nothing was added. Wait, then click Add again."), { busy: true, needsReview: false });
-        return { prepared: true };
+        return { prepared: true, delivered: [...(options?.includePng ? ["png"] : []), ...(options?.includeText ? ["txt"] : [])] };
       });
       chooseProvider("gemini"); doc.getElementById("destination-14").click();
       doc.getElementById("sendCapture").click(); await wait(60);
-      assert(retryCalls.join(",") === "11,14", "busy destination does not prevent other providers from being prepared");
+      assert(retryCalls.map((c) => c.id).join(",") === "11,14", "busy destination does not prevent other providers from being prepared");
       assert(doc.getElementById("destinationNote").textContent === "1 added to a chat draft · 1 busy (wait, then click Add again)", "busy is counted separately from failures");
       assert(doc.getElementById("provider-chatgpt").classList.contains("has-busy") && !doc.getElementById("provider-chatgpt").classList.contains("has-attention"), "hidden busy provider has a non-error indicator");
       chooseProvider("chatgpt");
@@ -240,16 +274,17 @@
       assert(doc.getElementById("destination-11").checked && !doc.getElementById("destination-11").disabled && !doc.getElementById("sendCapture").disabled, "busy destination stays selected and allows a manual retry");
       generating = false;
       await refresh(); await wait(60);
-      assert(retryCalls.join(",") === "11,14" && doc.querySelector(".destination-feedback.busy"), "refresh and elapsed time never automatically retry a busy chat");
+      assert(retryCalls.map((c) => c.id).join(",") === "11,14" && doc.querySelector(".destination-feedback.busy"), "refresh and elapsed time never automatically retry a busy chat");
       doc.getElementById("sendCapture").click(); await wait(60);
-      assert(retryCalls.join(",") === "11,14,11", "manual retry adds only the pending destination, never completed chats");
+      assert(retryCalls.map((c) => c.id).join(",") === "11,14,11", "manual retry adds only the pending destination, never completed chats");
       assert(!doc.querySelector(".destination-feedback.busy") && doc.getElementById("destination-11").disabled, "successful retry clears busy state and prevents another preparation");
       assert(captureCalls.length === 1, "busy retry reuses the original capture");
+
+      // Independent screenshot-first -> enable Include page text -> follow-up TXT-only & mixed multi-chat delivery.
       const originalChats = chats.slice();
       chats.splice(0, chats.length, originalChats[0], { id: 15, windowId: 3, index: 3, title: "Claude chat two", url: "https://claude.ai/chat/six", incognito: false });
       await refresh();
       assert(doc.querySelectorAll('[role="tab"]').length === 2 && doc.getElementById("provider-claude") && !doc.getElementById("provider-gemini"), "refresh removes closed providers and adds newly opened chats");
-      // Providers without a complete, verified preparation integration are never listed.
       chats.push(
         { id: 17, windowId: 3, index: 4, title: "DeepSeek chat", url: "https://chat.deepseek.com/a/chat/s/test", incognito: false },
         { id: 18, windowId: 3, index: 5, title: "Microsoft Copilot", url: "https://copilot.microsoft.com/chats/test", incognito: false },
@@ -292,14 +327,63 @@
       assert(doc.getElementById("destination-15").disabled, "refresh preserves duplicate protection after timeout");
       win.setTimeout = nativePanelTimeout;
       chats.pop();
-      // Recapture when automatic tab activation fails keeps the existing capture without logging console.error.
+
+      // Switching tabs while a capture exists surfaces Capture this tab without auto-capturing; clicking it switches the source!
+      win.__emitTabActivated(7, 2); await wait(30);
+      assert(captureCalls.length === 1, "switching tabs never auto-captures");
+      assert(!doc.getElementById("captureActiveTab").hidden && !doc.getElementById("captureActiveTab").disabled, "Capture this tab becomes prominent on a different eligible tab");
+      // Narrow panel width check with Capture this tab visible.
+      frame.style.width = "300px"; await wait(20);
+      assert(doc.documentElement.scrollWidth <= 300, "Source bar and Capture this tab fit 300px without horizontal overflow");
+      frame.style.width = "380px";
+      // If Capture this tab fails with permission error, previous valid capture & source tab remain intact!
+      fail = "permission";
+      doc.getElementById("captureActiveTab").click(); await wait(220);
+      assert(doc.body.dataset.state === "error" && doc.getElementById("statusDetail").textContent.includes("Chrome toolbar"), "permission failure on Capture this tab guides user to toolbar icon without closing Side Panel");
+      assert(doc.getElementById("preview").src === pinnedImage && doc.getElementById("sourcePage").textContent.includes("github.com") && !doc.getElementById("destinations").hidden, "failed Capture this tab preserves previous capture and source");
+      fail = false;
+      // Clicking Capture this tab succeeds, establishes tab 7 as new source, resets delivery states, and subsequent Recapture uses tab 7!
+      chooseProvider("chatgpt");
+      win.__emitTabActivated(7, 2); await wait(30);
+      doc.getElementById("captureActiveTab").click(); await wait(220);
+      assert(doc.body.dataset.state === "success" && captureCalls.at(-1) === 7, "Capture this tab captures the active tab");
+      assert(doc.getElementById("sourcePage").textContent.includes("docs.example.com"), "source bar updates to the newly captured tab");
+      assert(doc.getElementById("captureActiveTab").hidden, "Capture this tab hides once active tab becomes the source");
+      assert(!doc.querySelector(".destination-feedback.prepared") && doc.getElementById("destination-10").checked, "Capture this tab resets delivery states and re-applies default selection");
+      // Screenshot-first -> enable Include page text -> TXT-only follow-up + mixed batch!
+      const independentCalls = [];
+      win.eval("destinationUI").configurePreparation(async (destination, _cap, options) => {
+        independentCalls.push({ id: destination.id, ...options });
+        return { prepared: true, delivered: [...(options?.includePng ? ["png"] : []), ...(options?.includeText ? ["txt"] : [])] };
+      });
+      assert(doc.getElementById("sendCapture").textContent === "Add screenshot", "fresh capture defaults to Add screenshot");
+      doc.getElementById("sendCapture").click(); await wait(60);
+      assert(independentCalls.length === 1 && independentCalls[0].includePng === true && independentCalls[0].includeText === false, "screenshot-only sends only PNG");
+      assert(doc.getElementById("destination-10").disabled && doc.querySelector(".destination-feedback.prepared").textContent === "Screenshot added", "screenshot-only displays Screenshot added and disables row while text is off");
+      // Enable Include page text -> destination 10 immediately becomes selectable for TXT-only!
+      doc.getElementById("includePageText").click();
+      assert(!doc.getElementById("destination-10").disabled && doc.querySelector(".destination-feedback.followup").textContent === "Ready for page text", "enabling page text re-enables screenshot-only chat for TXT follow-up");
+      doc.getElementById("destination-10").click();
+      assert(doc.getElementById("sendCapture").textContent === "Add page text", "selecting screenshot-only chat with text enabled shows Add page text");
+      // Also select destination 11 (which needs both PNG+TXT) -> mixed batch!
+      doc.getElementById("destination-11").click();
+      assert(doc.getElementById("sendCapture").textContent === "Add to 2 chats", "mixed attachment needs show clear Add to N chats label");
+      doc.getElementById("sendCapture").click(); await wait(60);
+      assert(independentCalls.length === 3, "mixed batch delivered to both chats");
+      assert(independentCalls[1].id === 10 && independentCalls[1].includePng === false && independentCalls[1].includeText === true, "follow-up chat receives ONLY TXT, never resends PNG");
+      assert(independentCalls[2].id === 11 && independentCalls[2].includePng === true && independentCalls[2].includeText === true, "new chat in mixed batch receives PNG+TXT");
+      assert(doc.getElementById("destination-10").disabled && doc.getElementById("destination-11").disabled, "both chats are disabled once screenshot and text are added");
+      assert([...doc.querySelectorAll(".destination-feedback.prepared")].filter((n) => n.textContent === "Screenshot and text added").length === 2, "both chats display Screenshot and text added");
+
+      // Subsequent Recapture operates on newly established source (tab 7), even from another tab!
+      sourceId = 7;
+      activeTabInWindow = 1;
       sourceActive = false;
       activationFails = true;
       doc.getElementById("recapturePage").click(); await wait(40);
       assert(doc.body.dataset.state === "error" && doc.getElementById("statusDetail").textContent.includes("switch back to the source tab"), "failed source activation gives actionable guidance");
-      assert(!doc.getElementById("destinations").hidden && doc.getElementById("preview").src === pinnedImage, "failed recapture keeps existing capture and destinations");
+      assert(!doc.getElementById("destinations").hidden && doc.getElementById("preview").src === pngUpdated, "failed recapture keeps existing capture and destinations");
       assert(consoleErrors.length === 0, "expected recapture error is not logged to extension error console");
-      // When the source tab is in the background and Chrome briefly reports a tab-strip lock, Recapture recovers automatically.
       activationFails = false;
       sourceActive = false;
       transientActivationFails = 1;
@@ -310,29 +394,31 @@
         recaptureDeliveries.push([destination.id, capture.text]);
         return { prepared: true };
       });
-      doc.getElementById("includePageText").checked = true;
       doc.getElementById("recapturePage").click();
       assert(doc.body.dataset.state === "capturing" && doc.getElementById("recapturePage").disabled && doc.getElementById("destinations").hidden, "recapture shows capturing state and prevents conflicting actions");
       await wait(650);
-      assert(activatedTabs.join(",") === "1" && sourceActive === true, "recapture automatically activates the pinned source tab after transient tab lock");
-      assert(captureCalls.join(",") === "1,1", "recapture captures the pinned source tab again");
+      assert(activatedTabs.at(-1) === 7 && sourceActive === true, "recapture automatically activates the newly established source tab 7 after transient tab lock");
+      assert(captureCalls.at(-1) === 7, "recapture captures the newly established source tab");
       assert(doc.body.dataset.state === "success" && !doc.getElementById("recapturePage").disabled, "recapture completes cleanly");
       assert(doc.getElementById("preview").src === pngUpdated && doc.getElementById("textPreview").textContent.includes("Updated capture text"), "recapture replaces screenshot and extracted text");
       assert(!doc.getElementById("includePageText").checked, "recapture resets Include page text toggle");
       assert(!doc.querySelector(".destination-feedback.prepared") && !doc.querySelector(".destination-feedback.review"), "recapture resets delivery statuses");
-      assert(doc.getElementById("destination-10").disabled && !doc.getElementById("destination-10").checked && doc.getElementById("destination-11").checked && doc.getElementById("sendCapture").textContent === "Add to 1 chat", "default selection skips unavailable conversations and enables Add to 1 chat");
+      assert(doc.getElementById("destination-10").disabled && !doc.getElementById("destination-10").checked && doc.getElementById("destination-11").checked && doc.getElementById("sendCapture").textContent === "Add screenshot", "default selection skips unavailable conversations and enables Add screenshot");
       doc.getElementById("sendCapture").click(); await wait(60);
       assert(recaptureDeliveries.length === 1 && recaptureDeliveries[0][0] === 11 && recaptureDeliveries[0][1].includes("Updated capture text"), "recaptured content can be delivered without old duplicate blocks");
       chats[0] = { ...originalChats[0] };
       frame.remove();
-      // A toolbar click pins the source before the panel opens; the pin must win over the
-      // tab that happens to be active when the panel document loads.
+
+      // Toolbar click pins source before panel opens; pin wins over active tab.
       captureSerial = 0;
+      sourceId = 1;
+      activeTabInWindow = 1;
+      sourceActive = true;
       const queriesBeforePin = queries;
       sourcePin = { id: 5, windowId: 2, url: "https://github.com/org/repo", pinnedAt: Date.now() };
       ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(!doc.getElementById("includePageText").checked, "new session resets page text toggle");
-      assert(captureCalls.join(",") === "1,1,5" && queries === queriesBeforePin, "reopening captures the tab pinned by the toolbar click");
+      assert(captureCalls.at(-1) === 5 && queries === queriesBeforePin, "reopening captures the tab pinned by the toolbar click");
       assert(!doc.getElementById("sendCapture").disabled && doc.getElementById("destination-10").checked && !doc.querySelector(".destination-feedback.prepared"), "new panel session resets results and applies default selection");
       win.eval("destinationUI").configurePreparation(async (_destination, capture) => {
         assert(capture.includeText === false && capture.text.includes("Revenue"), "default Add uses PNG mode while keeping collected text");
@@ -344,12 +430,28 @@
       win.__onPanelMessage({ type: "captureSource:pinned" });
       await wait(500);
       win = frame.contentWindow; doc = frame.contentDocument;
-      assert(captureCalls.join(",") === "1,1,5,5", "the toolbar icon restarts the session on the clicked tab");
-      assert(doc.body.dataset.state === "success" && doc.getElementById("emptyState").hidden, "restarted session shows the new capture"); if (location.search.includes("preview")) {
+      assert(captureCalls.slice(-2).join(",") === "5,5", "the toolbar icon restarts the session on the clicked tab");
+      assert(doc.body.dataset.state === "success" && doc.getElementById("emptyState").hidden, "restarted session shows the new capture");
+      if (location.search.includes("preview")) {
         document.getElementById("result").textContent = "PASS " + JSON.stringify(checks); return;
       }
+
+      // Manual scroll interruption displays calm neutral interrupted state with prominent Recapture and zero console.error.
+      sourcePin = null; fail = "interrupted"; sourceId = 1; activeTabInWindow = 1; sourceActive = true;
+      frame.remove();
+      ({ frame, win, doc } = await openPanel()); await wait(220);
+      assert(doc.body.dataset.state === "interrupted", "manual scroll uses calm interrupted state instead of red error");
+      assert(doc.getElementById("statusTitle").textContent === "Capture interrupted", "interrupted state shows Capture interrupted heading");
+      assert(doc.getElementById("statusDetail").textContent.includes("manually scrolled"), "interrupted state explains manual scrolling clearly");
+      assert(doc.querySelector(".preview-card").hidden, "interrupted state hides failed preview placeholder");
+      assert(!doc.getElementById("statusRecapture").hidden && !doc.getElementById("statusRecapture").disabled, "interrupted state provides prominent Recapture action");
+      assert(consoleErrors.length === 0, "manual scroll interruption does not pollute console.error");
+      fail = false;
+      doc.getElementById("statusRecapture").click(); await wait(220);
+      assert(doc.body.dataset.state === "success" && !doc.getElementById("destinations").hidden, "clicking inline Recapture recovers cleanly from interrupted state");
+
       // Retryable initial capture failure keeps Recapture accessible, reports diagnostics, and succeeds on retry.
-      sourcePin = null; fail = "layout"; sourceId = 1;
+      sourcePin = null; fail = "layout"; sourceId = 1; activeTabInWindow = 1; sourceActive = true;
       frame.remove();
       ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(doc.body.dataset.state === "error" && !doc.getElementById("recapturePage").hidden && !doc.getElementById("recapturePage").disabled, "retryable initial capture error keeps Recapture enabled");
@@ -359,28 +461,38 @@
       fail = false;
       doc.getElementById("recapturePage").click(); await wait(220);
       assert(doc.body.dataset.state === "success" && !doc.getElementById("destinations").hidden, "clicking Recapture after failed initial capture succeeds");
-      sourcePin = null; fail = true;
+
+      // Restricted page -> switch to eligible normal tab enables Capture this tab directly without closing the Side Panel!
+      sourcePin = null; fail = true; sourceId = 8; activeTabInWindow = 8; sourceActive = true;
       frame.remove();
       ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(doc.body.dataset.state === "restricted", "protected pages use the calm restricted state instead of error");
       assert(doc.getElementById("statusTitle").textContent === "Restricted page", "restricted page displays clear heading");
       assert(doc.getElementById("statusDetail").textContent.includes("security reasons") && doc.getElementById("statusHint").textContent.includes("Open another webpage"), "restricted page explains browser security limitation and next step");
-      assert(doc.querySelector(".preview-card").hidden && doc.getElementById("recapturePage").hidden, "restricted page hides failed preview placeholder and unusable recapture button");
+      assert(doc.querySelector(".preview-card").hidden && doc.getElementById("recapturePage").hidden && doc.getElementById("statusCaptureTab").hidden, "restricted page hides failed preview placeholder and unusable buttons");
       assert(doc.getElementById("destinations").hidden && doc.getElementById("pageText").hidden, "restricted page hides unusable capture and delivery controls");
+      // Now user switches to normal webpage tab 7 while Side Panel stays open!
+      win.__emitTabActivated(7, 2); await wait(30);
+      assert(!doc.getElementById("statusCaptureTab").hidden && !doc.getElementById("statusCaptureTab").disabled, "switching from restricted page to normal tab enables Capture this tab directly");
+      assert(doc.getElementById("statusHint").textContent.includes("docs.example.com"), "restricted recovery hint names the newly active tab");
+      fail = false;
+      doc.getElementById("statusCaptureTab").click(); await wait(220);
+      assert(doc.body.dataset.state === "success" && captureCalls.at(-1) === 7 && !doc.getElementById("destinations").hidden, "Capture this tab recovers cleanly from restricted state without closing Side Panel");
+
       // Unsupported non-web pages also use the calm informative state.
-      fail = "unsupported";
+      fail = "unsupported"; sourceId = 8; activeTabInWindow = 8; sourceActive = true;
       frame.remove();
       ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(doc.body.dataset.state === "restricted" && doc.getElementById("statusTitle").textContent === "Unsupported page", "unsupported pages use calm informative state");
       assert(doc.querySelector(".preview-card").hidden && doc.getElementById("recapturePage").hidden, "unsupported page hides unusable controls");
       // A missing grant on a normal page is an access failure, not a restricted page.
-      fail = "permission";
+      fail = "permission"; sourceId = 1; activeTabInWindow = 1; sourceActive = true;
       frame.remove();
       ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(doc.body.dataset.state === "error", "access failures are displayed as error state");
       assert(doc.getElementById("recapturePage").hidden, "permission error hides Recapture until toolbar click re-grants activeTab");
       assert(!/restricted|security reasons/i.test(doc.getElementById("statusTitle").textContent + " " + doc.getElementById("statusDetail").textContent), "normal pages without permission are never reported as restricted");
-      assert(doc.getElementById("statusDetail").textContent.includes("blocked access"), "access failure explains the missing grant");
+      assert(doc.getElementById("statusDetail").textContent.includes("blocked access") && doc.getElementById("statusDetail").textContent.includes("no need to close the Side Panel"), "access failure explains missing grant and toolbar-click recovery");
       assert(consoleErrors.length === 0, "expected browser-boundary states do not pollute console.error");
       document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
     } catch (error) {

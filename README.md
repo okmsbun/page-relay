@@ -25,14 +25,16 @@ generation.
   traversed, while preserving the original scroll position.
 - **Sharp captures:** Keeps the correct devicePixelRatio/Retina resolution and
   handles fixed and sticky page elements.
-- **Optional page text:** Collects rendered text during capture. The TXT
-  attachment is off by default for each new capture and can be enabled afterward
-  without recapturing.
+- **Optional page text & independent delivery:** Collects rendered text during
+  capture. The TXT attachment is off by default for each new capture, can be
+  enabled afterward without recapturing, and can be added later to a
+  conversation that already received the screenshot without resending the PNG.
 - **Draft preservation:** Adds the new files alongside existing draft text and
   attachments without writing into the message editor. Uncertain uploads are
   marked **Needs review**; repeat attempts are protected against duplicates.
 - **Side Panel workflow:** Captures the tab you clicked, keeps that source fixed
-  for the session, and lets you select open AI conversations afterward.
+  for **Recapture**, and offers **Capture this tab** when you switch to another
+  supported webpage without needing to close and reopen the Side Panel.
 - **User-controlled sending:** Does not click Send, simulate Enter, or start
   model generation.
 - **Local extension:** No Page Relay backend, analytics, or telemetry.

@@ -38,11 +38,20 @@ background tab. After capture, browse freely. Click **Recapture** in the panel h
 capture the pinned source tab again without reopening the panel (if the source
 tab is in the background, Page Relay switches back to it automatically before
 capturing; recapture replaces the screenshot/text, resets delivery statuses and
-duplicate protection, and re-applies default conversation selection). Recapture
-also remains available after a retryable initial capture error. Transient page
-layout shifts trigger up to two clean, bounded recovery retries after settling.
-Closing/recreating the panel starts a fresh session; captures are not saved to
-disk or restored across browser restarts.
+duplicate protection, and re-applies default conversation selection). When you
+switch to another eligible webpage while the Side Panel is open, a compact
+source bar shows the current capture source alongside **Capture this tab**,
+which captures the newly active tab and establishes it as the new capture source
+(subject to Chrome's `activeTab` permission model; if Chrome requires a toolbar
+click to grant access to a newly visited tab, Page Relay explains that without
+asking you to close the Side Panel). Switching from a **Restricted page** or
+**Unsupported page** to a normal webpage also enables **Capture this tab**
+directly inside the open panel. Manual user scrolling during capture is detected
+via passive trusted input listeners and transitions cleanly to a calm
+**Capture interrupted** state with a prominent **Recapture** button, preserving
+any previous valid capture. Transient page layout shifts trigger up to two clean,
+bounded recovery retries after settling. Closing/recreating the panel starts a
+fresh session; captures are not saved to disk or restored across browser restarts.
 
 ### Permissions
 
@@ -189,18 +198,23 @@ Gemini opens its upload menu via structural menu triggers (independent of UI
 language), excludes single-file mobile `capture="camera"` inputs, and resolves
 its current media (`accept="image/*,video/*"` or legacy `accept="image/*"`) and
 document (`images-files-uploader > input[type="file"]` or unified fallback)
-controls before handing off PNG and optional TXT without waiting for PNG upload
-or preview completion; its TXT upload path is skipped entirely otherwise. If
-Gemini detaches the TXT input during PNG handoff, the routine re-acquires it via
-the upload menu before handing off TXT. When Page Relay opened the upload menu,
-it closes the menu cleanly after the operation. Existing files are included in
-preservation checks, and filename matching still accounts for Gemini's observed
-`<unique-stem>_<suffix>.jpg` conversion during duplicate/existing-file checks.
-Consent is never accepted automatically. Gemini temporarily activates its
-destination tab, retrying temporary Chrome tab-strip locks (such as while
-dragging a tab) with bounded backoff before injection so attachments are never
-duplicated, and restores the prior tab only if the user has not switched away
-(best effort with a two-second bound).
+controls for PNG-only, TXT-only, and PNG+TXT delivery. When handing off PNG and
+TXT via separate inputs, Page Relay yields briefly after PNG handoff (~50–350ms,
+exiting as soon as Gemini consumes the input or closes its menu) before
+re-acquiring the TXT input, avoiding Gemini's concurrent-input drop race without
+waiting for upload completion or the Send button. When Page Relay opened the
+upload menu, it closes the menu only if it is still visibly open after handoff,
+preventing double-toggling a menu Gemini already closed. Existing files are
+included in preservation checks, and filename matching still accounts for
+Gemini's observed `<unique-stem>_<suffix>.jpg` conversion during
+duplicate/existing-file checks. PNG and TXT delivery states are tracked
+independently per destination and per capture, so enabling **Include page text**
+after adding a screenshot allows adding only the missing TXT file without
+recapturing or resending the PNG. Consent is never accepted automatically.
+Gemini temporarily activates its destination tab, retrying temporary Chrome
+tab-strip locks (such as while dragging a tab) with bounded backoff before
+injection so attachments are never duplicated, and restores the prior tab only
+if the user has not switched away (best effort with a two-second bound).
 
 ## Scheduling, timeouts and duplicate protection
 

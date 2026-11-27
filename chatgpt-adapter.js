@@ -1,9 +1,14 @@
 /* Files only. The shared preparation routine preserves the existing composer. */
-async function prepareInChatGPT(destination, capture) {
-  const payload = CapturePreparation.payload({ ...destination, providerId: "chatgpt" }, capture);
+async function prepareInChatGPT(destination, capture, options) {
+  const payload = CapturePreparation.payload(
+    { ...destination, providerId: "chatgpt" },
+    capture,
+    options,
+  );
   // Revalidate immediately before injection; the script also checks location.
   await ChatDestinations.validate(destination);
-  if (Date.now() >= payload.deadline) throw new Error("Preparation expired before upload. Refresh and retry.");
+  if (Date.now() >= payload.deadline)
+    throw new Error("Preparation expired before upload. Refresh and retry.");
   let results;
   try {
     results = await chrome.scripting.executeScript({
@@ -23,9 +28,15 @@ async function prepareInChatGPT(destination, capture) {
   );
   error.needsReview = result?.needsReview ?? true;
   error.busy = result?.busy === true && result.needsReview === false;
+  if (Array.isArray(result?.delivered)) error.delivered = result.delivered;
+  if (Array.isArray(result?.failedKinds)) error.failedKinds = result.failedKinds;
   throw error;
 }
 
 async function prepareCaptureInComposer(payload) {
-  return prepareFilesInComposer({ ...payload, providerId: "chatgpt", deadline: payload.deadline ?? Date.now() + 140000 });
+  return prepareFilesInComposer({
+    ...payload,
+    providerId: "chatgpt",
+    deadline: payload.deadline ?? Date.now() + 140000,
+  });
 }

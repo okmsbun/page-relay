@@ -556,3 +556,66 @@ test("Gemini window remains reserved after timeout until actual activation opera
   );
   assert.deepEqual(calls, [1, 2]);
 });
+
+test("independent PNG and TXT delivery sends only missing TXT on follow-up and supports mixed multi-chat batches", async () => {
+  const tabs = [
+    tab(1, 10, { url: "https://chatgpt.com/c/one" }),
+    tab(2, 10, { url: "https://claude.ai/chat/two" }),
+    tab(3, 10, { url: "https://gemini.google.com/app/three" }),
+  ];
+  const api = harness({ tabs: { get: async (id) => tabs[id - 1] } });
+  const choices = api.describeTabs(tabs, 10, false);
+  const capture = { screenshot: "png", text: "body", includeText: false };
+  const calls = [];
+  const prepare = async (destination, _cap, options) => {
+    calls.push({ id: destination.id, ...options });
+    return {
+      prepared: true,
+      delivered: [
+        ...(options.includePng ? ["png"] : []),
+        ...(options.includeText ? ["txt"] : []),
+      ],
+    };
+  };
+
+  // Step 1: Add screenshot only to chat 1.
+  const first = await api.prepareSelected([choices[0]], capture, prepare, () => {});
+  assert.equal(first[0].state, "prepared");
+  assert.deepEqual({ ...first[0].attachments }, { png: "prepared", txt: null });
+  assert.deepEqual(calls, [{ id: 1, includePng: true, includeText: false }]);
+
+  // Step 2: Enable page text and add to chats 1 and 2 together (chat 1 gets TXT only, chat 2 gets PNG+TXT).
+  capture.includeText = true;
+  const second = await api.prepareSelected([choices[0], choices[1]], capture, prepare, () => {});
+  assert.deepEqual({ ...second[0].attachments }, { png: "prepared", txt: "prepared" });
+  assert.deepEqual({ ...second[1].attachments }, { png: "prepared", txt: "prepared" });
+  assert.deepEqual(calls.slice(1), [
+    { id: 1, includePng: false, includeText: true },
+    { id: 2, includePng: true, includeText: true },
+  ]);
+
+  // Step 3: Repeating chat 1 or 2 sends nothing; chat 3 gets partial PNG delivery if TXT fails.
+  const partial = await api.prepareSelected(
+    [choices[0], choices[2]],
+    capture,
+    async (destination, _cap, options) => {
+      calls.push({ id: destination.id, ...options });
+      const err = new Error("TXT upload failed");
+      err.needsReview = false;
+      err.delivered = ["png"];
+      err.failedKinds = ["txt"];
+      throw err;
+    },
+    () => {},
+  );
+  assert.equal(partial[0].state, "prepared");
+  assert.equal(partial[1].state, "failed");
+  assert.deepEqual({ ...partial[1].attachments }, { png: "prepared", txt: "failed" });
+  assert.deepEqual(calls.at(-1), { id: 3, includePng: true, includeText: true });
+
+  // Step 4: Retrying chat 3 sends ONLY the missing TXT, never resending PNG.
+  const retry = await api.prepareSelected([choices[2]], capture, prepare, () => {});
+  assert.equal(retry[0].state, "prepared");
+  assert.deepEqual({ ...retry[0].attachments }, { png: "prepared", txt: "prepared" });
+  assert.deepEqual(calls.at(-1), { id: 3, includePng: false, includeText: true });
+});

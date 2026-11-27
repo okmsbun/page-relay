@@ -1,6 +1,10 @@
 /* Files only. The shared preparation routine preserves the existing composer. */
-async function prepareInGemini(destination, capture) {
-  const payload = CapturePreparation.payload({ ...destination, providerId: "gemini" }, capture);
+async function prepareInGemini(destination, capture, options) {
+  const payload = CapturePreparation.payload(
+    { ...destination, providerId: "gemini" },
+    capture,
+    options,
+  );
   const retryDelays = [150, 250, 400, 600];
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const isTransientTabError = (error) =>
@@ -52,7 +56,8 @@ async function prepareInGemini(destination, capture) {
   let activated = false;
   let injectionStarted = false;
   try {
-    if (Date.now() >= payload.deadline) throw new Error("Preparation expired before upload. Refresh and retry.");
+    if (Date.now() >= payload.deadline)
+      throw new Error("Preparation expired before upload. Refresh and retry.");
     if (previous?.id !== destination.id) {
       await retryTabAction(
         () => chrome.tabs.update(destination.id, { active: true }),
@@ -61,7 +66,8 @@ async function prepareInGemini(destination, capture) {
       activated = true;
     }
     await ChatDestinations.validate(destination);
-    if (Date.now() >= payload.deadline) throw new Error("Preparation expired before upload. Refresh and retry.");
+    if (Date.now() >= payload.deadline)
+      throw new Error("Preparation expired before upload. Refresh and retry.");
     injectionStarted = true;
     const results = await chrome.scripting.executeScript({
       target: { tabId: destination.id },
@@ -87,7 +93,10 @@ async function prepareInGemini(destination, capture) {
       try {
         await Promise.race([
           new Promise((resolve) => {
-            restoreTimer = setTimeout(() => { restoreExpired = true; resolve(); }, 2000);
+            restoreTimer = setTimeout(() => {
+              restoreExpired = true;
+              resolve();
+            }, 2000);
           }),
           (async () => {
             await retryTabAction(
@@ -120,9 +129,15 @@ async function prepareInGemini(destination, capture) {
   );
   error.needsReview = result?.needsReview ?? true;
   error.busy = result?.busy === true && result.needsReview === false;
+  if (Array.isArray(result?.delivered)) error.delivered = result.delivered;
+  if (Array.isArray(result?.failedKinds)) error.failedKinds = result.failedKinds;
   throw error;
 }
 
 async function prepareInGeminiComposer(payload) {
-  return prepareFilesInComposer({ ...payload, providerId: "gemini", deadline: payload.deadline ?? Date.now() + 140000 });
+  return prepareFilesInComposer({
+    ...payload,
+    providerId: "gemini",
+    deadline: payload.deadline ?? Date.now() + 140000,
+  });
 }
