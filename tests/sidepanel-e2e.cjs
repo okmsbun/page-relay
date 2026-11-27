@@ -46,11 +46,14 @@ const PANEL_STATE = `(() => {
   const preview = document.getElementById("preview");
   return {
     state: document.body?.dataset?.state ?? null,
+    title: document.getElementById("statusTitle")?.textContent ?? "",
     detail: document.getElementById("statusDetail")?.textContent ?? "",
+    hint: document.getElementById("statusHint")?.textContent ?? "",
     preview: (preview?.src ?? "").length,
     meta: document.getElementById("imageMeta")?.textContent ?? "",
     text: (document.getElementById("textPreview")?.textContent ?? "").slice(0, 60),
     showing: document.getElementById("previewViewport")?.hidden === false,
+    previewCardHidden: document.querySelector(".preview-card")?.hidden === true,
     emptyHeading: document.getElementById("emptyState")?.querySelector("h2")?.textContent ?? "",
   };
 })()`;
@@ -351,7 +354,9 @@ async function main() {
             state.detail !== before.detail;
         if (
           leftPrevious &&
-          (state.state === "success" || state.state === "error")
+          (state.state === "success" ||
+            state.state === "error" ||
+            state.state === "restricted")
         ) {
           settled = state;
           break;
@@ -414,20 +419,20 @@ async function main() {
       `${admob.settled.meta} · source ${admob.pin.url}`,
     );
 
-    // 3. A genuinely protected page must still report the protected-page error.
+    // 3. A genuinely restricted page must show the calm restricted-page state.
     await activate(PROTECTED_URL);
     const blocked = await captureViaAction("chrome-extensions");
     check(
-      blocked.settled.state === "error" &&
-        /protects this page from scrolling access/.test(blocked.settled.detail),
-      `${PROTECTED_URL} reports the real protected-page error`,
-      blocked.settled.detail.slice(0, 80),
+      blocked.settled.state === "restricted" &&
+        blocked.settled.title === "Restricted page" &&
+        /security reasons/.test(blocked.settled.detail),
+      `${PROTECTED_URL} reports the calm restricted-page state`,
+      `${blocked.settled.title}: ${blocked.settled.detail.slice(0, 80)}`,
     );
     check(
-      !blocked.settled.showing &&
-        blocked.settled.emptyHeading === "Preview unavailable",
-      "a protected page exposes no stale capture",
-      `${blocked.settled.emptyHeading} · ${blocked.settled.meta}`,
+      !blocked.settled.showing && blocked.settled.previewCardHidden,
+      "a restricted page hides failed preview placeholders and exposes no stale capture",
+      `previewCardHidden=${blocked.settled.previewCardHidden}`,
     );
 
     // A normal page must capture again afterwards, not keep the protected-page error.

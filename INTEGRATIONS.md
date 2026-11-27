@@ -248,8 +248,10 @@ authenticated provider end-to-end tests. No real messages are sent by these test
    - a normal HTTPS page (for example GitHub) → toolbar icon → the panel must
      capture the page, not report a protected page;
    - Google AdMob → toolbar icon → capture must work for that page too;
-   - `chrome://extensions` → toolbar icon → the protected-page message must still
-     appear (this is the only case that may show it);
+   - `chrome://extensions` and Chrome Web Store URLs (including account-prefixed
+     `/u/N/webstore/devconsole/…` routes) → toolbar icon → the calm neutral
+     **Restricted page** notice must appear (never a red error card or "Preview
+     unavailable" placeholder, and with unusable capture/delivery controls hidden);
    - after a successful capture, switch between the source page, an AI tab and
      back: preview, text, selections and results must remain unchanged, and the
      status must never fall back to the protected-page message.

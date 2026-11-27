@@ -255,6 +255,11 @@ h1 {
   display: none;
 }
 
+.capture-status .status-hint {
+  margin-top: 6px;
+  color: var(--text-secondary);
+}
+
 .status-icon {
   width: 16px;
   height: 16px;
@@ -291,6 +296,66 @@ body[data-state="capturing"] .status-icon svg {
 
 body[data-state="success"] .status-icon {
   color: var(--success);
+}
+
+body[data-state="restricted"] .capture-status {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+body[data-state="restricted"] .status-icon {
+  color: var(--text-secondary);
+}
+
+body[data-state="restricted"]:not(.has-capture) .capture-status {
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 28px 20px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+body[data-state="restricted"]:not(.has-capture) .status-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  margin-top: 0;
+  border-radius: 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  color: var(--text-secondary);
+}
+
+body[data-state="restricted"]:not(.has-capture) .status-icon svg {
+  width: 21px;
+  height: 21px;
+  stroke-width: 1.6;
+}
+
+body[data-state="restricted"]:not(.has-capture) .capture-status h2 {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+
+body[data-state="restricted"]:not(.has-capture) .capture-status p {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+body[data-state="restricted"]:not(.has-capture) .capture-status .status-hint {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
 body[data-state="error"] .capture-status {

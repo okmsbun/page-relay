@@ -76,6 +76,7 @@
         win.showTextStats({ characters: 400, estimatedTokens: 100 });
         await wait(150);
         if (fail === "layout") throw Object.assign(new Error("The page layout changed during capture. Wait for it to settle and retry."), { layoutChanged: true, diagnostic: { reason: "geometry-changed", diffs: ["viewportHeight: 800 -> 720"] } });
+        if (fail === "unsupported") throw Object.assign(new Error("Full-page capture is unavailable on this type of page."), { unsupportedPage: true, expected: true });
         if (fail === "permission") throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
         if (fail) throw new Error("Cannot access a chrome:// URL");
         return current > 1
@@ -356,19 +357,26 @@
       sourcePin = null; fail = true;
       frame.remove();
       ({ frame, win, doc } = await openPanel()); await wait(220);
-      assert(doc.body.dataset.state === "error", "automatic capture errors are displayed");
-      assert(doc.getElementById("recapturePage").hidden, "protected page hides Recapture since retrying is impossible");
-      assert(doc.getElementById("statusDetail").textContent.includes("regular webpage") && doc.getElementById("statusDetail").textContent.includes("Side Panel"), "error explains protected page and panel reopen recovery");
-      assert(doc.getElementById("destinations").hidden && doc.getElementById("pageText").hidden, "failed session exposes no stale capture to add");
-      // A missing grant on a normal page is an access failure, not a protected page.
+      assert(doc.body.dataset.state === "restricted", "protected pages use the calm restricted state instead of error");
+      assert(doc.getElementById("statusTitle").textContent === "Restricted page", "restricted page displays clear heading");
+      assert(doc.getElementById("statusDetail").textContent.includes("security reasons") && doc.getElementById("statusHint").textContent.includes("Open another webpage"), "restricted page explains browser security limitation and next step");
+      assert(doc.querySelector(".preview-card").hidden && doc.getElementById("recapturePage").hidden, "restricted page hides failed preview placeholder and unusable recapture button");
+      assert(doc.getElementById("destinations").hidden && doc.getElementById("pageText").hidden, "restricted page hides unusable capture and delivery controls");
+      // Unsupported non-web pages also use the calm informative state.
+      fail = "unsupported";
+      frame.remove();
+      ({ frame, win, doc } = await openPanel()); await wait(220);
+      assert(doc.body.dataset.state === "restricted" && doc.getElementById("statusTitle").textContent === "Unsupported page", "unsupported pages use calm informative state");
+      assert(doc.querySelector(".preview-card").hidden && doc.getElementById("recapturePage").hidden, "unsupported page hides unusable controls");
+      // A missing grant on a normal page is an access failure, not a restricted page.
       fail = "permission";
       frame.remove();
       ({ frame, win, doc } = await openPanel()); await wait(220);
-      assert(doc.body.dataset.state === "error", "access failures are displayed");
+      assert(doc.body.dataset.state === "error", "access failures are displayed as error state");
       assert(doc.getElementById("recapturePage").hidden, "permission error hides Recapture until toolbar click re-grants activeTab");
-      assert(!/protect|regular webpage/i.test(doc.getElementById("statusDetail").textContent), "normal pages are never reported as protected");
+      assert(!/restricted|security reasons/i.test(doc.getElementById("statusTitle").textContent + " " + doc.getElementById("statusDetail").textContent), "normal pages without permission are never reported as restricted");
       assert(doc.getElementById("statusDetail").textContent.includes("blocked access"), "access failure explains the missing grant");
-      assert(consoleErrors.length === 0, "expected browser-boundary errors do not pollute console.error");
+      assert(consoleErrors.length === 0, "expected browser-boundary states do not pollute console.error");
       document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
     } catch (error) {
       document.getElementById("result").textContent = "FAIL " + error.message + " " + JSON.stringify(checks);

@@ -391,6 +391,7 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
 
 async function captureFullPage(tab) {
   if (isProtectedPageUrl(tab.url)) throw protectedPageError();
+  if (isUnsupportedPageUrl(tab.url)) throw unsupportedPageError();
   await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     files: ["page-text.js", "content.js"],
@@ -528,24 +529,39 @@ function showProgress(region, total, fraction, section) {
     .setAttribute("aria-valuenow", progressValue);
 }
 
-function setStatus(state, title, detail) {
+function setStatus(state, title, detail, hint = "") {
   document.body.dataset.state = state;
+  document.body.classList?.toggle("has-capture", Boolean(capturedPage));
   document.getElementById("statusTitle").textContent = title;
   document.getElementById("statusDetail").textContent = detail;
-  document
-    .getElementById("statusGlyph")
-    .setAttribute("d", state === "error" ? "M10 4v7m0 4v.1" : "M5 10l3 3 7-7");
+  const hintNode = document.getElementById("statusHint");
+  if (hintNode) hintNode.textContent = hint;
+  const glyph =
+    state === "restricted"
+      ? "M10 2.75l5.75 2.4v4.6c0 3.7-2.45 6.85-5.75 7.75-3.3-.9-5.75-4.05-5.75-7.75v-4.6L10 2.75z"
+      : state === "error"
+        ? "M10 4v7m0 4v.1"
+        : "M5 10l3 3 7-7";
+  document.getElementById("statusGlyph").setAttribute("d", glyph);
 }
 
-// Chrome only refuses scrolling access to its own pages, extension pages and the Web
-// Store. Every other page is capturable, so a failed tab lookup, script injection or
-// permission check must never be reported as a protected page.
+// Chrome restricts scripting/scrolling access on its internal pages, extension pages,
+// and Chrome Web Store routes (including account-prefixed developer console URLs).
+// Every normal webpage is capturable, so lookup or permission failures must never be
+// reported as browser-restricted pages.
 const PROTECTED_PAGE_URL =
-  /^(?:chrome|chrome-extension|chrome-untrusted|devtools|edge|brave|opera|about|view-source):/i;
+  /^(?:chrome|chrome-extension|chrome-untrusted|chrome-search|devtools|edge|brave|opera|about|view-source):/i;
 const WEB_STORE_URL =
-  /^https:\/\/(?:chromewebstore\.google\.com|chrome\.google\.com\/webstore)/i;
-const PROTECTED_PAGE_MESSAGE =
-  "Open a regular webpage, then try again. Chrome protects this page from scrolling access.";
+  /^https:\/\/(?:chromewebstore\.google\.com(?:\/|$|\?|#)|chrome\.google\.com\/(?:u\/\d+\/)?webstore(?:\/|$|\?|#))/i;
+const UNSUPPORTED_PAGE_URL = /^(?:data|blob|javascript|mailto|tel):/i;
+const RESTRICTED_PAGE_TITLE = "Restricted page";
+const RESTRICTED_PAGE_MESSAGE =
+  "Chrome restricts full-page capture on this page for security reasons.";
+const RESTRICTED_PAGE_HINT =
+  "Open another webpage to continue using Page Relay.";
+const UNSUPPORTED_PAGE_TITLE = "Unsupported page";
+const UNSUPPORTED_PAGE_MESSAGE =
+  "Full-page capture is unavailable on this type of page.";
 
 function isProtectedPageUrl(url) {
   return (
@@ -554,9 +570,21 @@ function isProtectedPageUrl(url) {
   );
 }
 
+function isUnsupportedPageUrl(url) {
+  return typeof url === "string" && UNSUPPORTED_PAGE_URL.test(url);
+}
+
 function protectedPageError() {
-  const error = new Error(PROTECTED_PAGE_MESSAGE);
+  const error = new Error(RESTRICTED_PAGE_MESSAGE);
   error.protectedPage = true;
+  error.expected = true;
+  return error;
+}
+
+function unsupportedPageError() {
+  const error = new Error(UNSUPPORTED_PAGE_MESSAGE);
+  error.unsupportedPage = true;
+  error.expected = true;
   return error;
 }
 
@@ -569,14 +597,23 @@ function isProtectedError(error) {
   const message = String(error?.message ?? error ?? "");
   return Boolean(
     error?.protectedPage ||
-      /chrome:\/\/|chrome-extension:\/\/|extensions gallery|webstore/i.test(
+      /chrome:\/\/|chrome-extension:\/\/|chrome-untrusted:\/\/|devtools:\/\/|extensions gallery|webstore/i.test(
         message,
       ),
   );
 }
 
+function isUnsupportedError(error) {
+  return Boolean(error?.unsupportedPage);
+}
+
 function isExpectedCaptureError(error) {
-  if (error?.expected || isProtectedError(error) || isPermissionError(error))
+  if (
+    error?.expected ||
+    isProtectedError(error) ||
+    isUnsupportedError(error) ||
+    isPermissionError(error)
+  )
     return true;
   const message = String(error?.message ?? error ?? "");
   return /active tab changed|keep the captured tab active|could not be identified|no longer open|cancelled/i.test(
@@ -586,7 +623,8 @@ function isExpectedCaptureError(error) {
 
 function friendlyError(error) {
   const message = String(error?.message ?? error ?? "");
-  if (isProtectedError(error)) return PROTECTED_PAGE_MESSAGE;
+  if (isProtectedError(error)) return RESTRICTED_PAGE_MESSAGE;
+  if (isUnsupportedError(error)) return UNSUPPORTED_PAGE_MESSAGE;
   if (isPermissionError(error))
     return "Chrome blocked access to this page’s content, so nothing was captured.";
   const base = message || "Something interrupted the capture. Please try again.";
@@ -704,6 +742,12 @@ async function runPanelCapture(sourceTab) {
   if (capturing || isDestinationBusy()) return;
   capturing = true;
   updateRecaptureButton();
+  const previewCard = document.querySelector(".preview-card");
+  if (previewCard) previewCard.hidden = false;
+  if (!capturedPage) {
+    const emptyHeading = document.querySelector("#emptyState h2");
+    if (emptyHeading) emptyHeading.textContent = "Preparing preview…";
+  }
   document.getElementById("includePageText").checked = false;
   destinationUI.suspend();
   progressValue = 0;
@@ -732,7 +776,8 @@ async function runPanelCapture(sourceTab) {
       windowId: tab.windowId,
       url: tab.url ?? "",
     });
-    canRetrySource = !isProtectedPageUrl(tab.url);
+    canRetrySource =
+      !isProtectedPageUrl(tab.url) && !isUnsupportedPageUrl(tab.url);
     updateRecaptureButton();
     const result = await captureFullPage(tab);
     capturedPage = result;
@@ -741,6 +786,7 @@ async function runPanelCapture(sourceTab) {
     showTextStats(result);
     document.getElementById("textPreview").textContent =
       result.text || "No rendered page text was found.";
+    if (previewCard) previewCard.hidden = false;
     document.getElementById("emptyState").hidden = true;
     for (const id of ["previewToolbar", "previewViewport", "imageMeta"]) {
       document.getElementById(id).hidden = false;
@@ -762,19 +808,37 @@ async function runPanelCapture(sourceTab) {
         console.error("[Page Relay] Capture failed:", error);
       }
     }
-    if (!capturedPage) {
-      document.querySelector("#emptyState h2").textContent =
-        "Preview unavailable";
-      if (isProtectedError(error) || isPermissionError(error))
+    const restricted = isProtectedError(error) || isUnsupportedError(error);
+    if (restricted) {
+      if (!capturedPage) {
         canRetrySource = false;
+        if (previewCard) previewCard.hidden = true;
+      }
+      setStatus(
+        "restricted",
+        isProtectedError(error) ? RESTRICTED_PAGE_TITLE : UNSUPPORTED_PAGE_TITLE,
+        friendlyError(error),
+        RESTRICTED_PAGE_HINT,
+      );
+    } else {
+      if (!capturedPage) {
+        if (previewCard) previewCard.hidden = false;
+        document.querySelector("#emptyState h2").textContent =
+          "Preview unavailable";
+        if (isPermissionError(error)) canRetrySource = false;
+      }
+      const canRecaptureNow = Boolean(
+        captureSourceTab && (capturedPage || canRetrySource),
+      );
+      const recovery = canRecaptureNow
+        ? "Click Recapture to try again, or reopen the Side Panel from the toolbar icon."
+        : "Close the Side Panel, then reopen it using the extension toolbar icon to retry.";
+      setStatus(
+        "error",
+        "Couldn’t capture this page",
+        `${friendlyError(error)} ${recovery}`,
+      );
     }
-    const canRecaptureNow = Boolean(
-      captureSourceTab && (capturedPage || canRetrySource),
-    );
-    const recovery = canRecaptureNow
-      ? "Click Recapture to try again, or reopen the Side Panel from the toolbar icon."
-      : "Close the Side Panel, then reopen it using the extension toolbar icon to retry.";
-    setStatus("error", "Couldn’t capture this page", `${friendlyError(error)} ${recovery}`);
     document.getElementById("pageText").hidden = !capturedPage;
     if (capturedPage) {
       showTextStats(capturedPage);

@@ -576,6 +576,52 @@ test("multiple areas are captured once each, then composed with the first app fr
   assert.ok(state.restored && state.disconnected);
 });
 
+test("restricted and unsupported URL detection handles browser schemes and Web Store account routes", () => {
+  const { run } = harness();
+  const isProtected = (url) => run(`isProtectedPageUrl(${JSON.stringify(url)})`);
+  const isUnsupported = (url) =>
+    run(`isUnsupportedPageUrl(${JSON.stringify(url)})`);
+
+  for (const url of [
+    "chrome://extensions",
+    "chrome-extension://abcdefghijklmnop/sidepanel.html",
+    "chrome-untrusted://crosh/",
+    "devtools://devtools/bundled/inspector.html",
+    "about:blank",
+    "view-source:https://example.com/",
+    "https://chromewebstore.google.com",
+    "https://chromewebstore.google.com/detail/pagerelay/abc",
+    "https://chromewebstore.google.com/u/1/detail/pagerelay/abc",
+    "https://chrome.google.com/webstore",
+    "https://chrome.google.com/webstore/devconsole/123",
+    "https://chrome.google.com/u/0/webstore/devconsole/123",
+    "https://chrome.google.com/u/2/webstore/devconsole/xyz/items",
+  ]) {
+    assert.equal(isProtected(url), true, `expected restricted: ${url}`);
+    assert.equal(isUnsupported(url), false, `not unsupported scheme: ${url}`);
+  }
+
+  for (const url of [
+    "data:text/html,<h1>Test</h1>",
+    "blob:https://example.com/550e8400-e29b-41d4-a716-446655440000",
+    "javascript:void(0)",
+  ]) {
+    assert.equal(isProtected(url), false, `not browser-restricted: ${url}`);
+    assert.equal(isUnsupported(url), true, `expected unsupported: ${url}`);
+  }
+
+  for (const url of [
+    "https://github.com/org/repo",
+    "https://apps.admob.com/v2/home",
+    "https://chromewebstore.google.com.evil.test/",
+    "https://chrome.google.com/webstore-blog/post",
+    "file:///tmp/example.html",
+  ]) {
+    assert.equal(isProtected(url), false, `regular page allowed: ${url}`);
+    assert.equal(isUnsupported(url), false, `regular page supported: ${url}`);
+  }
+});
+
 test("geometry comparison allows lazy height growth but rejects crop/viewport movement", () => {
   const { run } = harness();
   const geometry = {
