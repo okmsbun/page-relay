@@ -13,6 +13,7 @@ const SOURCE_LOOKUP_FAILED =
   "The tab to capture could not be identified. Open the Side Panel from the toolbar icon while a regular webpage is active, then try again.";
 const extensionOrigin = chrome.runtime.getURL("");
 let sessionPinnedAt = null;
+let sessionWindowId = null;
 
 function isUsableSource(tab) {
   // Our own documents (including this panel) are not capturable webpages.
@@ -20,6 +21,13 @@ function isUsableSource(tab) {
     Number.isInteger(tab?.id) &&
     !String(tab.url ?? "").startsWith(extensionOrigin)
   );
+}
+
+async function currentPanelWindowId() {
+  if (Number.isInteger(sessionWindowId)) return sessionWindowId;
+  const window = await chrome.windows?.getCurrent?.().catch(() => null);
+  if (Number.isInteger(window?.id)) sessionWindowId = window.id;
+  return sessionWindowId;
 }
 
 async function pinnedSourceTab() {
@@ -33,14 +41,15 @@ async function pinnedSourceTab() {
   )
     return null;
   sessionPinnedAt = pin.pinnedAt;
+  if (Number.isInteger(pin.windowId)) sessionWindowId = pin.windowId;
   return chrome.tabs.get(pin.id).catch(() => null);
 }
 
 async function activeTabInPanelWindow() {
-  const window = await chrome.windows.getCurrent().catch(() => null);
-  if (!Number.isInteger(window?.id)) return null;
+  const windowId = await currentPanelWindowId();
+  if (!Number.isInteger(windowId)) return null;
   const [tab] = await chrome.tabs
-    .query({ active: true, windowId: window.id })
+    .query({ active: true, windowId })
     .catch(() => []);
   return tab ?? null;
 }
@@ -52,6 +61,7 @@ async function resolveSourceTab() {
   const pinned = await pinnedSourceTab();
   const tab = isUsableSource(pinned) ? pinned : await activeTabInPanelWindow();
   if (!isUsableSource(tab)) throw new Error(SOURCE_LOOKUP_FAILED);
+  if (Number.isInteger(tab.windowId)) sessionWindowId = tab.windowId;
   // Frozen and reused: no later tab switch can replace the source of this session.
   return Object.freeze({
     id: tab.id,
@@ -61,19 +71,48 @@ async function resolveSourceTab() {
   });
 }
 
-// Clicking the toolbar icon grants activeTab to the current tab. When the Side Panel
-// is already open, continue capture seamlessly in-place so any previous capture stays
-// preserved until the new capture succeeds (falling back to reload if unavailable).
-chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type !== "captureSource:pinned") return;
-  // Ignore a repin notification belonging to the exact pin this fresh panel just loaded.
-  if (message.pinnedAt && message.pinnedAt === sessionPinnedAt) return;
-  if (message.pinnedAt) sessionPinnedAt = message.pinnedAt;
+function dispatchToolbarRepin(pinnedAt, tab) {
+  // Ignore a duplicate notification belonging to a pin this panel already handled.
+  if (pinnedAt && pinnedAt === sessionPinnedAt) return;
+  if (
+    Number.isInteger(tab?.windowId) &&
+    Number.isInteger(sessionWindowId) &&
+    tab.windowId !== sessionWindowId
+  ) {
+    return;
+  }
+  if (pinnedAt) sessionPinnedAt = pinnedAt;
   if (typeof handleToolbarRepin === "function") {
-    void handleToolbarRepin(message);
+    void handleToolbarRepin({
+      type: "captureSource:pinned",
+      pinnedAt,
+      tab,
+    });
     return;
   }
   location.reload();
+}
+
+// Clicking the toolbar icon grants activeTab to the current tab. When the Side Panel
+// is already open, continue capture seamlessly in-place so any previous capture stays
+// preserved until the new capture succeeds (falling back to reload if unavailable).
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type !== "captureSource:pinned") return;
+  dispatchToolbarRepin(message.pinnedAt, message.tab);
+  sendResponse?.({ ok: true });
+});
+
+// Defense-in-depth: also observe session storage updates in case the runtime message
+// raced with service worker wake-up. Deduplicated with sessionPinnedAt above.
+chrome.storage?.session?.onChanged?.addListener?.((changes) => {
+  const next = changes?.[SOURCE_TAB_KEY]?.newValue;
+  if (!Number.isInteger(next?.id) || !next?.pinnedAt) return;
+  dispatchToolbarRepin(next.pinnedAt, {
+    id: next.id,
+    windowId: next.windowId,
+    url: next.url ?? "",
+    title: next.title ?? "",
+  });
 });
 
 void startPanelCapture(resolveSourceTab());

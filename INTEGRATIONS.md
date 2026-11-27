@@ -24,9 +24,14 @@ can reach their open background tabs.
 Open the panel using the extension toolbar icon to start one automatic capture.
 Opening it from Chrome's Side Panel menu does not grant `activeTab` access to an
 arbitrary source page.
-`service-worker.js` pins that clicked tab in `chrome.storage.session`, and
-`sidepanel-session.js` resolves the source exactly once when the panel document
-opens: the pinned tab when the click is recent, otherwise the active tab of the
+`service-worker.js` pins that clicked tab in `chrome.storage.session`, checks
+for an open global Side Panel via `chrome.runtime.getContexts({ contextTypes:
+["SIDE_PANEL"] })` (without filtering by `windowIds`, because Chrome reports
+`windowId: -1` for global `SIDE_PANEL` contexts), and notifies any open panel
+via `captureSource:pinned` (with a `chrome.storage.session.onChanged` fallback
+deduplicated by `pinnedAt` and scoped to the panel's window).
+`sidepanel-session.js` resolves the source once when the panel document opens:
+the pinned tab when the click is recent, otherwise the active tab of the
 panel's own window. The resolved source is frozen and reused, so switching tabs
 afterwards never replaces or restarts it. The panel's own `chrome-extension://`
 document can never be the source; an unusable lookup is reported as a lookup

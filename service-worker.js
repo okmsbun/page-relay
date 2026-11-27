@@ -18,11 +18,17 @@ function isNoReceiverError(error) {
 async function hasOpenSidePanel(windowId) {
   if (typeof chrome.runtime?.getContexts !== "function") return null;
   try {
+    // Chrome reports windowId: -1 for a global SIDE_PANEL context, so filtering
+    // by windowIds here would always return [] and suppress repin notifications.
     const contexts = await chrome.runtime.getContexts({
       contextTypes: ["SIDE_PANEL"],
-      windowIds: [windowId],
     });
-    return contexts.length > 0;
+    return contexts.some(
+      (context) =>
+        !Number.isInteger(context?.windowId) ||
+        context.windowId === -1 ||
+        context.windowId === windowId,
+    );
   } catch {
     return null;
   }

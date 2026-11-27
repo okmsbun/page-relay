@@ -408,18 +408,42 @@ async function main() {
       `${switched.at(-1).state} · ${switched.at(-1).meta}`,
     );
 
-    // 2. Google AdMob must capture too (it redirects to a Google sign-in page).
+    // 2. Switching to a new ungranted tab -> clicking Capture this tab shows calm
+    // Page access required while preserving the previous capture, and clicking the
+    // real toolbar icon recovers automatically without closing/reopening the panel.
     await activate(ADMOB_URL, { expectSite: false });
+    await sleep(800);
+    await cdp.evaluate(
+      normal.session,
+      'document.getElementById("captureActiveTab")?.click()',
+    );
+    const permState = await waitFor(
+      "permission state after Capture this tab",
+      async () => {
+        const st = await cdp.evaluate(normal.session, PANEL_STATE);
+        return st.state === "permission" ? st : null;
+      },
+      15000,
+    );
+    check(
+      permState.state === "permission" &&
+        permState.title === "Page access required" &&
+        permState.showing &&
+        permState.preview === beforeSwitch.preview,
+      "Capture this tab on an ungranted tab shows Page access required and preserves previous capture",
+      `${permState.title}: ${permState.hint}`,
+    );
     const admob = await captureViaAction("admob");
     check(
       admob.settled.state === "success" &&
         admob.settled.showing &&
         admob.settled.meta !== beforeSwitch.meta,
-      `${ADMOB_URL} captured through the native Side Panel`,
+      `${ADMOB_URL} recovered automatically via toolbar click without reopening the Side Panel`,
       `${admob.settled.meta} · source ${admob.pin.url}`,
     );
 
-    // 3. A genuinely restricted page must show the calm restricted-page state.
+    // 3. A genuinely restricted page must show the calm restricted-page state while
+    // preserving the previous valid capture until a new capture succeeds.
     await activate(PROTECTED_URL);
     const blocked = await captureViaAction("chrome-extensions");
     check(
@@ -430,9 +454,9 @@ async function main() {
       `${blocked.settled.title}: ${blocked.settled.detail.slice(0, 80)}`,
     );
     check(
-      !blocked.settled.showing && blocked.settled.previewCardHidden,
-      "a restricted page hides failed preview placeholders and exposes no stale capture",
-      `previewCardHidden=${blocked.settled.previewCardHidden}`,
+      blocked.settled.showing && /preserved/.test(blocked.settled.hint),
+      "clicking toolbar on a restricted page preserves the previous valid capture in-place",
+      `hint=${blocked.settled.hint}`,
     );
 
     // A normal page must capture again afterwards, not keep the protected-page error.

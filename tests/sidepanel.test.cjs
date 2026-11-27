@@ -41,7 +41,9 @@ function runServiceWorker({
   };
   if (contexts !== undefined) {
     runtime.getContexts = async (filter) => {
-      events.push(`runtime.getContexts:${filter.windowIds.join(",")}`);
+      events.push(
+        `runtime.getContexts:${(filter.contextTypes || []).join(",")}`,
+      );
       return contexts;
     };
   }
@@ -215,6 +217,21 @@ test("opening a closed Side Panel does not log a missing-receiver error and stor
   assert.equal(noContext.messages.length, 0);
   assert.equal(noContext.errors.length, 0);
 
+  // Real Chrome reports windowId: -1 for a global SIDE_PANEL context; the service
+  // worker must still recognize the open panel and send the repin notification.
+  const globalPanelContext = runServiceWorker({
+    contexts: [{ contextType: "SIDE_PANEL", windowId: -1 }],
+  });
+  await globalPanelContext.listeners.click({
+    id: 17,
+    windowId: 4,
+    url: "https://github.com/org/repo",
+  });
+  assert.equal(globalPanelContext.opened.length, 1);
+  assert.equal(globalPanelContext.messages.length, 1);
+  assert.equal(globalPanelContext.messages[0].type, "captureSource:pinned");
+  assert.equal(globalPanelContext.errors.length, 0);
+
   const realOpenFailure = runServiceWorker({
     openError: new Error("Window not found"),
   });
@@ -266,6 +283,13 @@ test("toolbar repin continues in-place via handleToolbarRepin when available wit
   assert.equal(session.reloads(), 0, "did not reload the open panel");
   assert.equal(repins.length, 1);
   assert.equal(repins[0].tab.id, 42);
+  // A repin from another Chrome window must not hijack this window's open panel.
+  session.listeners.message({
+    type: "captureSource:pinned",
+    pinnedAt: repin.pinnedAt + 100,
+    tab: { id: 99, windowId: 999, url: "https://other-window.example/", title: "Other" },
+  });
+  assert.equal(repins.length, 1, "ignored toolbar repin from a different Chrome window");
 });
 
 test("the panel captures the tab that was active when it was opened", async () => {
