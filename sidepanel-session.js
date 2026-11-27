@@ -61,12 +61,18 @@ async function resolveSourceTab() {
   });
 }
 
-// The toolbar icon is the only way to restart this session: clicking it on another tab
-// starts a fresh capture of that tab instead of surfacing the previous page's capture.
+// Clicking the toolbar icon grants activeTab to the current tab. When the Side Panel
+// is already open, continue capture seamlessly in-place so any previous capture stays
+// preserved until the new capture succeeds (falling back to reload if unavailable).
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type !== "captureSource:pinned") return;
   // Ignore a repin notification belonging to the exact pin this fresh panel just loaded.
   if (message.pinnedAt && message.pinnedAt === sessionPinnedAt) return;
+  if (message.pinnedAt) sessionPinnedAt = message.pinnedAt;
+  if (typeof handleToolbarRepin === "function") {
+    void handleToolbarRepin(message);
+    return;
+  }
   location.reload();
 });
 

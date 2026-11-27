@@ -33,8 +33,12 @@ generation.
   attachments without writing into the message editor. Uncertain uploads are
   marked **Needs review**; repeat attempts are protected against duplicates.
 - **Side Panel workflow:** Captures the tab you clicked, keeps that source fixed
-  for **Recapture**, and offers **Capture this tab** when you switch to another
-  supported webpage without needing to close and reopen the Side Panel.
+  for **Recapture**, and shows the currently active tab alongside **Capture this
+  tab** when you switch pages. Tabs that already have permission capture
+  directly; tabs requiring Chrome's `activeTab` grant display a calm **Page
+  access required** notice while preserving your previous capture, and clicking
+  the Page Relay toolbar icon automatically continues capture without closing
+  the Side Panel.
 - **User-controlled sending:** Does not click Send, simulate Enter, or start
   model generation.
 - **Local extension:** No Page Relay backend, analytics, or telemetry.

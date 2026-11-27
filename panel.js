@@ -604,9 +604,11 @@ function setStatus(state, title, detail, hint = "") {
       ? "M10 2.75l5.75 2.4v4.6c0 3.7-2.45 6.85-5.75 7.75-3.3-.9-5.75-4.05-5.75-7.75v-4.6L10 2.75z"
       : state === "interrupted"
         ? "M7.25 5.5v9M12.75 5.5v9"
-        : state === "error"
-          ? "M10 4v7m0 4v.1"
-          : "M5 10l3 3 7-7";
+        : state === "permission"
+          ? "M10 6.25v4.5M10 13.75v.1M10 2.75a7.25 7.25 0 1 1 0 14.5 7.25 7.25 0 0 1 0-14.5z"
+          : state === "error"
+            ? "M10 4v7m0 4v.1"
+            : "M5 10l3 3 7-7";
   document.getElementById("statusGlyph").setAttribute("d", glyph);
 }
 
@@ -630,6 +632,12 @@ const UNSUPPORTED_PAGE_MESSAGE =
 const INTERRUPTED_PAGE_TITLE = "Capture interrupted";
 const INTERRUPTED_PAGE_MESSAGE =
   "The page was manually scrolled during capture. Please keep the page still while capturing to ensure a complete screenshot.";
+const PERMISSION_PAGE_TITLE = "Page access required";
+const PERMISSION_PAGE_MESSAGE =
+  "Click the Page Relay icon in Chrome’s toolbar to capture this tab.";
+const PERMISSION_PRESERVED_HINT = "Your previous capture is preserved.";
+const PERMISSION_NO_CAPTURE_HINT =
+  "No need to close the Side Panel — capture will start automatically.";
 
 function isProtectedPageUrl(url) {
   return (
@@ -738,6 +746,9 @@ document.getElementById("zoomPreview").addEventListener("click", (event) => {
 const recaptureButton = document.getElementById("recapturePage");
 const sourceBar = document.getElementById("sourceBar");
 const sourcePageLabel = document.getElementById("sourcePage");
+const activeTabRow = document.getElementById("activeTabRow");
+const activeTabLabel = document.getElementById("activeTabLabel");
+const activeTabStatus = document.getElementById("activeTabStatus");
 const captureActiveTabButton = document.getElementById("captureActiveTab");
 const statusActions = document.getElementById("statusActions");
 const statusRecaptureButton = document.getElementById("statusRecapture");
@@ -747,6 +758,7 @@ let captureStarted = false;
 let capturing = false;
 let captureSourceTab = null;
 let currentActiveTab = null;
+let permissionDeniedTab = null;
 let panelWindowId = null;
 let canRetrySource = false;
 
@@ -781,21 +793,34 @@ function formatTabHost(tab) {
   return String(tab.title || "").trim() || tab.url;
 }
 
+function isPermissionDeniedForTab(tab) {
+  return Boolean(
+    permissionDeniedTab &&
+      tab &&
+      permissionDeniedTab.id === tab.id &&
+      permissionDeniedTab.url === tab.url,
+  );
+}
+
+function isDifferentFromCapturedSource(tab) {
+  if (!tab || !captureSourceTab) return false;
+  return tab.id !== captureSourceTab.id || tab.url !== captureSourceTab.url;
+}
+
 function canOfferCaptureActiveTab() {
   if (!currentActiveTab || !isCapturablePageUrl(currentActiveTab.url))
     return false;
+  if (isPermissionDeniedForTab(currentActiveTab)) return false;
   if (capturedPage) {
-    return (
-      currentActiveTab.id !== captureSourceTab?.id ||
-      currentActiveTab.url !== captureSourceTab?.url
-    );
+    return isDifferentFromCapturedSource(currentActiveTab);
   }
   const state = document.body?.dataset?.state;
   if (state === "restricted") return true;
-  if (["error", "interrupted"].includes(state)) {
+  if (["error", "interrupted", "permission"].includes(state)) {
     return (
-      currentActiveTab.id !== captureSourceTab?.id ||
-      currentActiveTab.url !== captureSourceTab?.url
+      !captureSourceTab ||
+      currentActiveTab.id !== captureSourceTab.id ||
+      currentActiveTab.url !== captureSourceTab.url
     );
   }
   return false;
@@ -820,7 +845,9 @@ function updateCaptureControls() {
   const state = document.body?.dataset?.state;
 
   if (sourceBar) {
-    const showSourceBar = Boolean(capturedPage && captureSourceTab && !capturing);
+    const showSourceBar = Boolean(
+      capturedPage && captureSourceTab && !capturing,
+    );
     sourceBar.hidden = !showSourceBar;
     if (showSourceBar && sourcePageLabel) {
       const label = formatTabLabel(captureSourceTab);
@@ -829,13 +856,40 @@ function updateCaptureControls() {
         .filter(Boolean)
         .join(" — ");
     }
+    const showActiveRow =
+      showSourceBar &&
+      Boolean(currentActiveTab) &&
+      isDifferentFromCapturedSource(currentActiveTab);
+    if (activeTabRow) {
+      activeTabRow.hidden = !showActiveRow;
+    }
+    if (showActiveRow && activeTabLabel) {
+      activeTabLabel.textContent =
+        formatTabLabel(currentActiveTab) || "Active tab";
+      activeTabLabel.title = [currentActiveTab.title, currentActiveTab.url]
+        .filter(Boolean)
+        .join(" — ");
+    }
     if (captureActiveTabButton) {
-      const showBarAction = showSourceBar && offerActiveTab;
+      const showBarAction = showActiveRow && offerActiveTab;
       captureActiveTabButton.hidden = !showBarAction;
       captureActiveTabButton.disabled = !showBarAction || busy;
       if (showBarAction) {
         captureActiveTabButton.title = `Switch capture source to ${formatTabHost(currentActiveTab)}`;
       }
+    }
+    if (activeTabStatus) {
+      const statusText = !showActiveRow || offerActiveTab
+        ? ""
+        : isPermissionDeniedForTab(currentActiveTab)
+          ? "Toolbar click needed"
+          : isProtectedPageUrl(currentActiveTab?.url)
+            ? "Restricted"
+            : isUnsupportedPageUrl(currentActiveTab?.url)
+              ? "Unsupported"
+              : "";
+      activeTabStatus.hidden = !statusText;
+      activeTabStatus.textContent = statusText;
     }
   }
 
@@ -905,6 +959,17 @@ function setupTabTracking() {
     const snapshot = normalizeTabSnapshot(tab);
     if (!snapshot) return;
     currentActiveTab = snapshot;
+    if (permissionDeniedTab && !isPermissionDeniedForTab(snapshot)) {
+      permissionDeniedTab = null;
+    }
+    if (
+      !capturing &&
+      capturedPage &&
+      document.body?.dataset?.state === "permission" &&
+      !isPermissionDeniedForTab(snapshot)
+    ) {
+      setStatus("success", "", "");
+    }
     updateCaptureControls();
   };
 
@@ -1042,6 +1107,9 @@ async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
   capturing = true;
   const previousSource = captureSourceTab;
   const previousCanRetry = canRetrySource;
+  const includePageTextInput = document.getElementById("includePageText");
+  const previousIncludeText = Boolean(includePageTextInput?.checked);
+  let targetSnapshot = null;
   updateCaptureControls();
   const previewCard = document.querySelector(".preview-card");
   if (previewCard) previewCard.hidden = false;
@@ -1049,7 +1117,6 @@ async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
     const emptyHeading = document.querySelector("#emptyState h2");
     if (emptyHeading) emptyHeading.textContent = "Preparing preview…";
   }
-  document.getElementById("includePageText").checked = false;
   destinationUI.suspend();
   progressValue = 0;
   document.getElementById("progressFill").style.width = "0%";
@@ -1073,20 +1140,24 @@ async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
       throw error;
     }
     if (Number.isInteger(tab.windowId)) panelWindowId = tab.windowId;
-    const targetSnapshot = Object.freeze({
+    targetSnapshot = Object.freeze({
       id: tab.id,
       windowId: tab.windowId,
       url: tab.url ?? "",
       title: tab.title ?? "",
     });
     currentActiveTab = targetSnapshot;
-    if (mode !== "active-tab" || !capturedPage) {
+    const preserveExisting =
+      Boolean(capturedPage) &&
+      (mode === "active-tab" || mode === "toolbar-repin");
+    if (!preserveExisting) {
       captureSourceTab = targetSnapshot;
       canRetrySource =
         !isProtectedPageUrl(tab.url) && !isUnsupportedPageUrl(tab.url);
     }
     updateCaptureControls();
     const result = await captureFullPage(tab);
+    permissionDeniedTab = null;
     captureSourceTab = Object.freeze({
       id: tab.id,
       windowId: tab.windowId,
@@ -1115,7 +1186,10 @@ async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
     setStatus("success", "", "");
     await destinationUI.show(result);
   } catch (error) {
-    if (mode === "active-tab" && capturedPage) {
+    if (
+      capturedPage &&
+      (mode === "active-tab" || mode === "toolbar-repin")
+    ) {
       captureSourceTab = previousSource;
       canRetrySource = previousCanRetry;
     }
@@ -1137,6 +1211,7 @@ async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
     }
     const interrupted = isManualScrollInterruption(error);
     const restricted = isProtectedError(error) || isUnsupportedError(error);
+    const permissionDenied = !restricted && isPermissionError(error);
     if (interrupted) {
       if (!capturedPage) {
         canRetrySource = Boolean(captureSourceTab);
@@ -1146,7 +1221,7 @@ async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
         "interrupted",
         INTERRUPTED_PAGE_TITLE,
         INTERRUPTED_PAGE_MESSAGE,
-        capturedPage ? "Your previous capture is still available below." : "",
+        capturedPage ? PERMISSION_PRESERVED_HINT : "",
       );
     } else if (restricted) {
       if (!capturedPage) {
@@ -1159,24 +1234,37 @@ async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
           ? RESTRICTED_PAGE_TITLE
           : UNSUPPORTED_PAGE_TITLE,
         friendlyError(error),
-        RESTRICTED_PAGE_HINT,
+        capturedPage ? PERMISSION_PRESERVED_HINT : RESTRICTED_PAGE_HINT,
+      );
+    } else if (permissionDenied) {
+      if (targetSnapshot) {
+        permissionDeniedTab = {
+          id: targetSnapshot.id,
+          url: targetSnapshot.url,
+        };
+      }
+      if (!capturedPage) {
+        canRetrySource = false;
+        if (previewCard) previewCard.hidden = true;
+      }
+      setStatus(
+        "permission",
+        PERMISSION_PAGE_TITLE,
+        PERMISSION_PAGE_MESSAGE,
+        capturedPage ? PERMISSION_PRESERVED_HINT : PERMISSION_NO_CAPTURE_HINT,
       );
     } else {
-      const permissionDenied = isPermissionError(error);
       if (!capturedPage) {
         if (previewCard) previewCard.hidden = false;
         document.querySelector("#emptyState h2").textContent =
           "Preview unavailable";
-        if (permissionDenied) canRetrySource = false;
       }
       const canRecaptureNow = Boolean(
         captureSourceTab && (capturedPage || canRetrySource),
       );
-      const recovery = permissionDenied
-        ? "Click the Page Relay icon in the Chrome toolbar to grant access to this tab (no need to close the Side Panel)."
-        : canRecaptureNow
-          ? "Click Recapture to try again, or click the Page Relay toolbar icon on the tab you want to capture."
-          : "Click the Page Relay icon in the Chrome toolbar while on a regular webpage to retry.";
+      const recovery = canRecaptureNow
+        ? "Click Recapture to try again, or click the Page Relay toolbar icon on the tab you want to capture."
+        : "Click the Page Relay icon in the Chrome toolbar while on a regular webpage to retry.";
       setStatus(
         "error",
         "Couldn’t capture this page",
@@ -1185,6 +1273,7 @@ async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
     }
     document.getElementById("pageText").hidden = !capturedPage;
     if (capturedPage) {
+      if (includePageTextInput) includePageTextInput.checked = previousIncludeText;
       showTextStats(capturedPage);
       document.getElementById("textPreview").textContent =
         capturedPage.text || "No rendered page text was found.";
@@ -1201,6 +1290,27 @@ async function startPanelCapture(sourceTab) {
   if (captureStarted) return;
   captureStarted = true;
   return runPanelCapture(sourceTab);
+}
+
+async function handleToolbarRepin(message) {
+  permissionDeniedTab = null;
+  const resolveGrantedTab = async () => {
+    if (Number.isInteger(message?.tab?.id)) {
+      const live = await chrome.tabs
+        ?.get?.(message.tab.id)
+        .catch(() => null);
+      const chosen = live?.id ? live : message.tab;
+      return Object.freeze({
+        id: chosen.id,
+        windowId: chosen.windowId,
+        url: chosen.url ?? "",
+        title: chosen.title ?? "",
+      });
+    }
+    if (typeof resolveSourceTab === "function") return resolveSourceTab();
+    return resolveActiveTabToCapture();
+  };
+  return runPanelCapture(resolveGrantedTab(), { mode: "toolbar-repin" });
 }
 
 recaptureButton?.addEventListener("click", () => {

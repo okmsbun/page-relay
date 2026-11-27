@@ -30,18 +30,25 @@
 
   <main>
     <section id="sourceBar" class="source-bar" aria-label="Capture source" hidden>
-      <div class="source-meta">
-        <span class="source-badge">Source</span>
+      <div class="source-row">
+        <span class="source-badge">Captured</span>
         <span id="sourcePage" class="source-page"></span>
       </div>
-      <button id="captureActiveTab" class="capture-tab-button" type="button"
-        title="Capture the currently active browser tab as the new source" hidden disabled>
-        <svg class="inline-icon" viewBox="0 0 16 16" aria-hidden="true">
-          <rect x="2" y="3" width="12" height="10" rx="2" />
-          <path d="M2 6h12M8 8v3.5M6.25 9.75h3.5" />
-        </svg>
-        <span>Capture this tab</span>
-      </button>
+      <div id="activeTabRow" class="source-row active-tab-row" hidden>
+        <div class="source-meta">
+          <span class="source-badge active-badge">Active tab</span>
+          <span id="activeTabLabel" class="source-page"></span>
+        </div>
+        <button id="captureActiveTab" class="capture-tab-button" type="button"
+          title="Capture the currently active browser tab as the new source" hidden disabled>
+          <svg class="inline-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2" y="3" width="12" height="10" rx="2" />
+            <path d="M2 6h12M8 8v3.5M6.25 9.75h3.5" />
+          </svg>
+          <span>Capture this tab</span>
+        </button>
+        <span id="activeTabStatus" class="active-tab-status" hidden></span>
+      </div>
     </section>
 
     <section class="capture-status" aria-live="polite" aria-atomic="true">

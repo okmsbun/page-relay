@@ -219,15 +219,27 @@ h1 {
 /* Capture source bar & Capture this tab */
 .source-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 6px 8px;
-  padding: 7px 10px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-xs);
+}
+
+.source-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.active-tab-row {
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
 }
 
 .source-meta {
@@ -235,7 +247,7 @@ h1 {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  flex: 1 1 130px;
+  flex: 1 1 120px;
 }
 
 .source-badge {
@@ -250,6 +262,12 @@ h1 {
   letter-spacing: 0.01em;
 }
 
+.source-badge.active-badge {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
+}
+
 .source-page {
   min-width: 0;
   flex: 1;
@@ -259,6 +277,17 @@ h1 {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.active-tab-status {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 550;
 }
 
 .capture-tab-button {
@@ -400,8 +429,22 @@ body[data-state="interrupted"] .status-icon {
   color: var(--warning);
 }
 
+body[data-state="permission"] .capture-status {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
 body[data-state="permission"] .status-icon {
   color: var(--accent-text);
+}
+
+body[data-state="permission"] #statusTitle {
+  color: var(--text);
+}
+
+body[data-state="permission"] .status-hint {
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
 body[data-state="restricted"]:not(.has-capture) .capture-status,

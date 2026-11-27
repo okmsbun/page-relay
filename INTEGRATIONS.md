@@ -38,15 +38,19 @@ background tab. After capture, browse freely. Click **Recapture** in the panel h
 capture the pinned source tab again without reopening the panel (if the source
 tab is in the background, Page Relay switches back to it automatically before
 capturing; recapture replaces the screenshot/text, resets delivery statuses and
-duplicate protection, and re-applies default conversation selection). When you
-switch to another eligible webpage while the Side Panel is open, a compact
-source bar shows the current capture source alongside **Capture this tab**,
-which captures the newly active tab and establishes it as the new capture source
-(subject to Chrome's `activeTab` permission model; if Chrome requires a toolbar
-click to grant access to a newly visited tab, Page Relay explains that without
-asking you to close the Side Panel). Switching from a **Restricted page** or
-**Unsupported page** to a normal webpage also enables **Capture this tab**
-directly inside the open panel. Manual user scrolling during capture is detected
+duplicate protection, and re-applies default conversation selection). When you switch to another eligible webpage while the Side Panel is open, the
+source bar clearly distinguishes the **Captured** source from the **Active tab**
+and offers **Capture this tab**. If Chrome has already granted access to that
+tab (either via persistent provider host permissions or an earlier `activeTab`
+grant on the same origin), **Capture this tab** captures it directly. If Chrome
+requires a fresh `activeTab` grant for a newly visited tab, Page Relay shows a
+calm **Page access required** state (instead of a red error card), hides the
+unusable button for that tab, preserves the previous valid capture, extracted
+text, and delivery states, and automatically continues capture in-place the
+moment you click the **Page Relay** toolbar icon—without closing or reloading
+the Side Panel. Switching from a **Restricted page** or **Unsupported page** to
+a normal webpage also enables **Capture this tab** directly inside the open
+panel. Manual user scrolling during capture is detected
 via passive trusted input listeners and transitions cleanly to a calm
 **Capture interrupted** state with a prominent **Recapture** button, preserving
 any previous valid capture. Transient page layout shifts trigger up to two clean,

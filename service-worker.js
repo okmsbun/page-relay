@@ -34,6 +34,7 @@ async function openPanelForSourceTab(tab) {
     id: tab.id,
     windowId: tab.windowId,
     url: tab.url ?? "",
+    title: tab.title ?? "",
     pinnedAt: Date.now(),
   };
   // Only the identity of the clicked tab is stored, and only for this open gesture: a
@@ -51,16 +52,23 @@ async function openPanelForSourceTab(tab) {
     await stored;
     return;
   }
-  // Ensure the pin is persisted before notifying any already-open panel to reload.
+  // Ensure the pin is persisted before notifying any already-open panel.
   await stored;
   const panelOpen = await hasOpenSidePanel(tab.windowId);
   if (panelOpen === false) return;
   try {
-    // An open panel is not reloaded by Chrome, so ask it to start a session for this
-    // newly clicked tab. A freshly opened panel reads the pin from session storage.
+    // An open panel is not reloaded by Chrome, so ask it to capture this newly
+    // granted tab in-place (preserving any previous capture until success).
+    // A freshly opened panel reads the pin from session storage.
     await chrome.runtime.sendMessage({
       type: REPIN_MESSAGE,
       pinnedAt: pin.pinnedAt,
+      tab: {
+        id: pin.id,
+        windowId: pin.windowId,
+        url: pin.url,
+        title: pin.title,
+      },
     });
   } catch (error) {
     if (!isNoReceiverError(error)) {

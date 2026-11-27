@@ -79,7 +79,7 @@ function runServiceWorker({
 }
 
 // Runs sidepanel-session.js the way the panel document does.
-async function runPanelSession({ pin, tabs, toggles = {} }) {
+async function runPanelSession({ pin, tabs, toggles = {}, onRepin = null }) {
   const captures = [];
   const queries = [];
   const listeners = {};
@@ -90,6 +90,7 @@ async function runPanelSession({ pin, tabs, toggles = {} }) {
         reloads += 1;
       },
     },
+    ...(onRepin ? { handleToolbarRepin: onRepin } : {}),
     chrome: {
       runtime: {
         getURL: (file) => `${EXTENSION_ORIGIN}${file}`,
@@ -241,6 +242,30 @@ test("a freshly opened panel ignores a duplicate repin message for its own pin t
     pinnedAt: pinnedAt + 1000,
   });
   assert.equal(session.reloads(), 1);
+});
+
+test("toolbar repin continues in-place via handleToolbarRepin when available without reloading the panel", async () => {
+  const { messages, listeners } = runServiceWorker();
+  const repins = [];
+  const tabs = [
+    { id: 17, windowId: 2, url: "https://github.com/org/repo", title: "Repo" },
+    { id: 42, windowId: 2, url: "https://docs.example.com/guide", title: "Guide" },
+  ];
+  const session = await runPanelSession({
+    pin: { id: 17, windowId: 2, url: tabs[0].url, pinnedAt: Date.now() - 500 },
+    tabs,
+    toggles: { activeId: 17 },
+    onRepin: (msg) => repins.push(msg),
+  });
+  await listeners.click(tabs[1]);
+  const repin = messages.at(-1);
+  assert.equal(repin.type, "captureSource:pinned");
+  assert.equal(repin.tab.id, 42);
+  assert.equal(repin.tab.title, "Guide");
+  session.listeners.message(repin);
+  assert.equal(session.reloads(), 0, "did not reload the open panel");
+  assert.equal(repins.length, 1);
+  assert.equal(repins[0].tab.id, 42);
 });
 
 test("the panel captures the tab that was active when it was opened", async () => {

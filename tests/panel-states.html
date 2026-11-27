@@ -328,28 +328,43 @@
       win.setTimeout = nativePanelTimeout;
       chats.pop();
 
-      // Switching tabs while a capture exists surfaces Capture this tab without auto-capturing; clicking it switches the source!
+      // Switching tabs while a capture exists distinguishes Captured source vs Active tab and surfaces Capture this tab without auto-capturing.
       win.__emitTabActivated(7, 2); await wait(30);
       assert(captureCalls.length === 1, "switching tabs never auto-captures");
+      assert(!doc.getElementById("activeTabRow").hidden && doc.getElementById("activeTabLabel").textContent.includes("docs.example.com"), "active tab row clearly names the newly active tab separately from the captured source");
+      assert(doc.getElementById("sourcePage").textContent.includes("github.com"), "captured source label stays clearly identified");
       assert(!doc.getElementById("captureActiveTab").hidden && !doc.getElementById("captureActiveTab").disabled, "Capture this tab becomes prominent on a different eligible tab");
-      // Narrow panel width check with Capture this tab visible.
+      // Narrow panel width check with Active tab row and Capture this tab visible.
       frame.style.width = "300px"; await wait(20);
       assert(doc.documentElement.scrollWidth <= 300, "Source bar and Capture this tab fit 300px without horizontal overflow");
       frame.style.width = "380px";
-      // If Capture this tab fails with permission error, previous valid capture & source tab remain intact!
+      // If Capture this tab requires activeTab permission, show calm Page access required state (not red error), hide unusable button, preserve previous capture & toggle & delivery statuses, and continue automatically on toolbar click!
+      doc.getElementById("includePageText").checked = true;
       fail = "permission";
       doc.getElementById("captureActiveTab").click(); await wait(220);
-      assert(doc.body.dataset.state === "error" && doc.getElementById("statusDetail").textContent.includes("Chrome toolbar"), "permission failure on Capture this tab guides user to toolbar icon without closing Side Panel");
-      assert(doc.getElementById("preview").src === pinnedImage && doc.getElementById("sourcePage").textContent.includes("github.com") && !doc.getElementById("destinations").hidden, "failed Capture this tab preserves previous capture and source");
-      fail = false;
-      // Clicking Capture this tab succeeds, establishes tab 7 as new source, resets delivery states, and subsequent Recapture uses tab 7!
+      assert(doc.body.dataset.state === "permission", "missing permission uses calm permission state instead of red error card");
+      assert(doc.getElementById("statusTitle").textContent === "Page access required", "permission state displays Page access required heading");
+      assert(doc.getElementById("statusDetail").textContent.includes("Page Relay icon") && doc.getElementById("statusHint").textContent.includes("previous capture is preserved"), "permission state explains toolbar action and reassures user previous capture is preserved");
+      assert(doc.getElementById("captureActiveTab").hidden && doc.getElementById("activeTabStatus").textContent.includes("Toolbar click"), "unusable Capture this tab button is hidden for the ungranted tab");
+      assert(doc.getElementById("preview").src === pinnedImage && doc.getElementById("sourcePage").textContent.includes("github.com") && !doc.getElementById("destinations").hidden && doc.getElementById("includePageText").checked, "permission state preserves previous capture, source, destinations, and page text toggle");
+      // Clicking the toolbar icon while the Side Panel stays open automatically captures tab 7 in-place without closing/reloading!
       chooseProvider("chatgpt");
+      fail = false;
+      win.__onPanelMessage({ type: "captureSource:pinned", pinnedAt: Date.now() + 50, tab: { id: 7, windowId: 2, url: "https://docs.example.com/guide", title: "Guide Docs" } });
+      await wait(240);
+      assert(doc.body.dataset.state === "success" && captureCalls.at(-1) === 7, "toolbar click automatically captures the newly granted tab in-place");
+      assert(doc.getElementById("sourcePage").textContent.includes("docs.example.com"), "source bar updates to the newly captured tab");
+      assert(doc.getElementById("activeTabRow").hidden && doc.getElementById("captureActiveTab").hidden, "active tab row and Capture this tab hide once active tab becomes the source");
+      assert(!doc.querySelector(".destination-feedback.prepared") && doc.getElementById("destination-10").checked, "Capture this tab resets delivery states and re-applies default selection");
+      // Switching to another tab where permissions ARE already available captures directly in 1 click!
+      win.__emitTabActivated(1, 2); await wait(30);
+      assert(!doc.getElementById("captureActiveTab").hidden && doc.getElementById("activeTabLabel").textContent.includes("github.com"), "Capture this tab appears again on another eligible tab");
+      doc.getElementById("captureActiveTab").click(); await wait(220);
+      assert(doc.body.dataset.state === "success" && captureCalls.at(-1) === 1 && doc.getElementById("sourcePage").textContent.includes("github.com"), "Capture this tab captures directly when permissions are already available");
+      // Switch back to tab 7 and capture it directly to continue follow-up tests on tab 7.
       win.__emitTabActivated(7, 2); await wait(30);
       doc.getElementById("captureActiveTab").click(); await wait(220);
-      assert(doc.body.dataset.state === "success" && captureCalls.at(-1) === 7, "Capture this tab captures the active tab");
-      assert(doc.getElementById("sourcePage").textContent.includes("docs.example.com"), "source bar updates to the newly captured tab");
-      assert(doc.getElementById("captureActiveTab").hidden, "Capture this tab hides once active tab becomes the source");
-      assert(!doc.querySelector(".destination-feedback.prepared") && doc.getElementById("destination-10").checked, "Capture this tab resets delivery states and re-applies default selection");
+      assert(doc.body.dataset.state === "success" && captureCalls.at(-1) === 7, "Capture this tab re-establishes tab 7 cleanly");
       // Screenshot-first -> enable Include page text -> TXT-only follow-up + mixed batch!
       const independentCalls = [];
       win.eval("destinationUI").configurePreparation(async (destination, _cap, options) => {
@@ -485,14 +500,15 @@
       ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(doc.body.dataset.state === "restricted" && doc.getElementById("statusTitle").textContent === "Unsupported page", "unsupported pages use calm informative state");
       assert(doc.querySelector(".preview-card").hidden && doc.getElementById("recapturePage").hidden, "unsupported page hides unusable controls");
-      // A missing grant on a normal page is an access failure, not a restricted page.
+      // A missing grant on a normal page uses the calm Page access required state (never red error or restricted page).
       fail = "permission"; sourceId = 1; activeTabInWindow = 1; sourceActive = true;
       frame.remove();
       ({ frame, win, doc } = await openPanel()); await wait(220);
-      assert(doc.body.dataset.state === "error", "access failures are displayed as error state");
-      assert(doc.getElementById("recapturePage").hidden, "permission error hides Recapture until toolbar click re-grants activeTab");
+      assert(doc.body.dataset.state === "permission", "missing permission is displayed as calm permission state instead of red error");
+      assert(doc.getElementById("statusTitle").textContent === "Page access required", "permission state shows Page access required heading");
+      assert(doc.querySelector(".preview-card").hidden && doc.getElementById("recapturePage").hidden && doc.getElementById("statusCaptureTab").hidden, "permission state hides failed preview placeholder and unusable buttons");
       assert(!/restricted|security reasons/i.test(doc.getElementById("statusTitle").textContent + " " + doc.getElementById("statusDetail").textContent), "normal pages without permission are never reported as restricted");
-      assert(doc.getElementById("statusDetail").textContent.includes("blocked access") && doc.getElementById("statusDetail").textContent.includes("no need to close the Side Panel"), "access failure explains missing grant and toolbar-click recovery");
+      assert(doc.getElementById("statusDetail").textContent.includes("Page Relay icon") && doc.getElementById("statusHint").textContent.includes("No need to close the Side Panel"), "permission state explains toolbar click and automatic continuation");
       assert(consoleErrors.length === 0, "expected browser-boundary states do not pollute console.error");
       document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
     } catch (error) {
