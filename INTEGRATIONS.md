@@ -185,16 +185,22 @@ ChatGPT uses the current composer form and its general upload control, including
 the `data-composer-markdown` editor variant. Claude uses its ChatComposer upload
 control. Both receive PNG and optional TXT in one new upload batch.
 
-Gemini resolves and validates its image upload control (and its TXT upload control
-when selected) before handing off PNG and optional TXT without waiting for PNG
-upload or preview completion; its TXT upload path is skipped entirely otherwise.
-If Gemini detaches the TXT input during PNG handoff, the routine re-acquires it
-via the upload menu before handing off TXT. Existing files are included in
+Gemini opens its upload menu via structural menu triggers (independent of UI
+language), excludes single-file mobile `capture="camera"` inputs, and resolves
+its current media (`accept="image/*,video/*"` or legacy `accept="image/*"`) and
+document (`images-files-uploader > input[type="file"]` or unified fallback)
+controls before handing off PNG and optional TXT without waiting for PNG upload
+or preview completion; its TXT upload path is skipped entirely otherwise. If
+Gemini detaches the TXT input during PNG handoff, the routine re-acquires it via
+the upload menu before handing off TXT. When Page Relay opened the upload menu,
+it closes the menu cleanly after the operation. Existing files are included in
 preservation checks, and filename matching still accounts for Gemini's observed
 `<unique-stem>_<suffix>.jpg` conversion during duplicate/existing-file checks.
 Consent is never accepted automatically. Gemini temporarily activates its
-destination tab, restoring the prior tab only if the user has not switched away;
-restoration is best effort with a two-second bound.
+destination tab, retrying temporary Chrome tab-strip locks (such as while
+dragging a tab) with bounded backoff before injection so attachments are never
+duplicated, and restores the prior tab only if the user has not switched away
+(best effort with a two-second bound).
 
 ## Scheduling, timeouts and duplicate protection
 

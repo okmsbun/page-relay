@@ -22,7 +22,7 @@
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const html = await (await fetch("../sidepanel.html")).text();
     const base = new URL("../", location.href).href;
-    let sourceId = 1, captureCalls = [], captureSerial = 0, queries = 0, fail = false, discoveryFails = false, sourcePin = null, sourceActive = true, activationFails = false, activatedTabs = [], consoleErrors = [];
+    let sourceId = 1, captureCalls = [], captureSerial = 0, queries = 0, fail = false, discoveryFails = false, sourcePin = null, sourceActive = true, activationFails = false, transientActivationFails = 0, activatedTabs = [], consoleErrors = [];
     const chats = [
       { id: 10, windowId: 2, index: 1, title: "Extension debugging", url: "https://chatgpt.com/c/one", status: "complete", incognito: false },
       { id: 11, windowId: 3, index: 0, title: "Other discussion", url: "https://chatgpt.com/c/two", status: "complete", incognito: false },
@@ -56,6 +56,10 @@
           },
           get: async (id) => chats.find((tab) => tab.id === id) ?? sourceTab(id),
           update: async (id, options) => {
+            if (transientActivationFails > 0) {
+              transientActivationFails--;
+              throw new Error("Tabs cannot be edited right now (user may be dragging a tab).");
+            }
             if (activationFails) throw new Error("Tab cannot be activated");
             if (options.active) {
               activatedTabs.push(id);
@@ -295,9 +299,10 @@
       assert(doc.body.dataset.state === "error" && doc.getElementById("statusDetail").textContent.includes("switch back to the source tab"), "failed source activation gives actionable guidance");
       assert(!doc.getElementById("destinations").hidden && doc.getElementById("preview").src === pinnedImage, "failed recapture keeps existing capture and destinations");
       assert(consoleErrors.length === 0, "expected recapture error is not logged to extension error console");
-      // When the source tab is in the background, Recapture activates it automatically and starts a fresh capture.
+      // When the source tab is in the background and Chrome briefly reports a tab-strip lock, Recapture recovers automatically.
       activationFails = false;
       sourceActive = false;
+      transientActivationFails = 1;
       chooseProvider("chatgpt");
       chats[0] = { ...chats[0], discarded: true };
       const recaptureDeliveries = [];
@@ -308,8 +313,8 @@
       doc.getElementById("includePageText").checked = true;
       doc.getElementById("recapturePage").click();
       assert(doc.body.dataset.state === "capturing" && doc.getElementById("recapturePage").disabled && doc.getElementById("destinations").hidden, "recapture shows capturing state and prevents conflicting actions");
-      await wait(420);
-      assert(activatedTabs.join(",") === "1" && sourceActive === true, "recapture automatically activates the pinned source tab");
+      await wait(650);
+      assert(activatedTabs.join(",") === "1" && sourceActive === true, "recapture automatically activates the pinned source tab after transient tab lock");
       assert(captureCalls.join(",") === "1,1", "recapture captures the pinned source tab again");
       assert(doc.body.dataset.state === "success" && !doc.getElementById("recapturePage").disabled, "recapture completes cleanly");
       assert(doc.getElementById("preview").src === pngUpdated && doc.getElementById("textPreview").textContent.includes("Updated capture text"), "recapture replaces screenshot and extracted text");

@@ -186,13 +186,13 @@ function harness({
             height: Math.round(windowHeight * scale),
             width: Math.round(100 * scale),
           };
+          await onCapture?.(state);
           state.captures.push(shot);
           state.events.push({
             type: "capture",
             y: state.y,
             region: state.regionIndex,
           });
-          await onCapture?.(state);
           return JSON.stringify(shot);
         },
       },
@@ -218,6 +218,73 @@ test("switching tabs while a segment is captured never stitches the wrong tab an
       (canvas) => !canvas.rows?.some((row) => row !== undefined),
     ),
   );
+});
+
+test("transient Chrome tab-strip lock during captureVisibleTab recovers automatically", async () => {
+  let lockCount = 0;
+  const { run, state } = harness({
+    height: 1600,
+    onCapture() {
+      if (lockCount < 2) {
+        lockCount++;
+        throw new Error(
+          "Tabs cannot be edited right now (user may be dragging a tab).",
+        );
+      }
+    },
+  });
+  await run("captureFullPage({id: 1, windowId: 2})");
+  assert.equal(lockCount, 2);
+  const canvas = state.canvases.at(-1);
+  assert.equal(canvas.rows.length, 1600);
+  for (let row = 0; row < 1600; row++) assert.equal(canvas.rows[row], row);
+  assert.ok(state.restored && state.disconnected);
+});
+
+test("transient tab-strip lock recovery aborts safely if active tab changes before retry", async () => {
+  let attempts = 0;
+  const { run, state } = harness({
+    height: 1600,
+    onCapture(state) {
+      if (attempts++ === 0) {
+        state.activeId = 9;
+        throw new Error(
+          "Tabs cannot be edited right now (user may be dragging a tab).",
+        );
+      }
+    },
+  });
+  await assert.rejects(
+    run("captureFullPage({id: 1, windowId: 2})"),
+    /Keep the captured tab active/,
+  );
+  assert.equal(attempts, 1, "did not retry captureVisibleTab on wrong tab");
+  assert.ok(state.restored && state.disconnected);
+});
+
+test("persistent Chrome tab-strip lock stops after bounded retries with structured diagnostics", async () => {
+  let attempts = 0;
+  const { run, state } = harness({
+    height: 1600,
+    onCapture() {
+      attempts++;
+      throw new Error(
+        "Tabs cannot be edited right now (user may be dragging a tab).",
+      );
+    },
+  });
+  await assert.rejects(
+    run("captureFullPage({id: 1, windowId: 2})"),
+    (error) => {
+      assert.equal(error.transientTab, true);
+      assert.equal(error.diagnostic?.reason, "tab-strip-busy");
+      assert.equal(error.diagnostic?.operation, "captureVisibleTab");
+      assert.equal(error.diagnostic?.attempts, 5);
+      return true;
+    },
+  );
+  assert.equal(attempts, 5);
+  assert.ok(state.restored && state.disconnected);
 });
 
 for (const [height, viewport, scale] of [

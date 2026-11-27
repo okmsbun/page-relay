@@ -19,14 +19,30 @@
   const prepare = { chatgpt: prepareCaptureInComposer, claude: prepareInClaudeComposer, gemini: prepareInGeminiComposer }[provider];
   async function run(mode, includeText, truncated = false) {
     const editorMarkup = provider === "chatgpt" ? '<div id="prompt-textarea" contenteditable="true" style="min-height:30px"></div>' : provider === "claude" ? '<div data-testid="chat-input" contenteditable="true" style="min-height:30px"></div>' : '<rich-textarea><div role="textbox" contenteditable="true" style="min-height:30px"></div></rich-textarea>';
+    const geminiUploaderMarkup = () => {
+      if (mode === "gemini-legacy") {
+        return '<uploader><input type="file" multiple accept="image/*"><images-files-uploader><input type="file" multiple accept=".txt,.pdf"></images-files-uploader></uploader>';
+      }
+      if (mode === "gemini-unified") {
+        return '<uploader><images-files-uploader><div><button type="button" class="hidden-local-file-image-selector-button"></button><input type="file" name="Filedata" multiple></div></images-files-uploader></uploader>';
+      }
+      const cameraInput = mode === "gemini-mobile" ? '<input type="file" accept="image/*" capture="camera" class="hidden-file-input">' : '';
+      const txtInputs = mode === "no-text-input"
+        ? ''
+        : '<images-files-uploader><button type="button" data-test-id="local-images-files-uploader-button">' + (mode === "gemini-turkish" ? 'Dosya yükle' : 'Upload files') + '</button><input type="file" multiple class="hidden-file-input" accept=".txt,.pdf,.doc,.docx"><div><button type="button" class="hidden-local-file-image-selector-button"></button><input type="file" name="Filedata" multiple></div></images-files-uploader>';
+      const uploaderTxtInput = mode === "no-text-input" ? '' : '<input type="file" multiple class="hidden-file-input" accept=".txt,.pdf,.doc,.docx">';
+      return '<uploader><div class="simplified-file-uploader">' + txtInputs + '<drive-uploader><button type="button">' + (mode === "gemini-turkish" ? 'Drive’dan ekle' : 'Add from Drive') + '</button></drive-uploader></div>' + cameraInput + '<input type="file" multiple class="hidden-file-input" accept="image/*,video/*">' + uploaderTxtInput + '</uploader>';
+    };
+    const geminiLazyMenu = provider === "gemini" && !["unresolved-selection", "selected-acknowledged", "disabled-input", "no-input", "gemini-legacy"].includes(mode);
     const inputMarkup = provider === "gemini"
-      ? '<uploader><input type="file" multiple accept="image/*"><images-files-uploader><input type="file" multiple accept=".txt,.pdf"></images-files-uploader></uploader>'
+      ? (geminiLazyMenu ? '' : geminiUploaderMarkup())
       : provider === "claude"
         ? '<input type="file" multiple data-testid="file-upload">'
         : '<input type="file" multiple accept="image/*" data-testid="image-upload">' +
           '<input type="file" multiple accept="image/*,.txt,.pdf" data-testid="general-upload">' +
           (mode === "ambiguous-general" ? '<input type="file" multiple accept="image/*,.txt,.pdf" data-testid="second-general-upload">' : '');
-    fixture.innerHTML = `<${provider === "chatgpt" ? 'form' : 'div'} ${provider === "claude" ? 'data-cds="ChatComposer"' : provider === "gemini" ? 'data-node-type="input-area"' : ''}>${editorMarkup}${inputMarkup}<div id="tiles"></div><button type="button" id="send" disabled>Send</button><simplified-input-menu><button type="button" aria-haspopup="menu">Upload</button></simplified-input-menu></${provider === "chatgpt" ? 'form' : 'div'}>`;
+    const menuLabel = mode === "gemini-turkish" ? 'Yükle ve araçlar' : 'Upload & tools';
+    fixture.innerHTML = `<${provider === "chatgpt" ? 'form' : 'div'} ${provider === "claude" ? 'data-cds="ChatComposer"' : provider === "gemini" ? 'data-node-type="input-area"' : ''}>${editorMarkup}${inputMarkup}<div id="tiles"></div><button type="button" id="send" disabled>Send</button><simplified-input-menu><button type="button" aria-haspopup="menu" aria-expanded="false" aria-label="${menuLabel}">+</button></simplified-input-menu></${provider === "chatgpt" ? 'form' : 'div'}>`;
     const editor = () => fixture.querySelector('[contenteditable="true"]');
     const container = fixture.firstElementChild;
     const tiles = fixture.querySelector("#tiles");
@@ -62,13 +78,10 @@
       container.append(ui);
     }
     if (mode === "modern" && provider === "chatgpt") { editor().removeAttribute("id"); editor().setAttribute("data-composer-markdown", ""); container.setAttribute("data-chatgpt-composer", ""); }
-    const inputs = [...fixture.querySelectorAll('input[type="file"]')];
-    if (provider === "chatgpt") assert(inputs.length >= 2 && inputs[0].dataset.testid === "image-upload", "ChatGPT fixture has an image-only control before the general uploader");
-    if (["unresolved-selection", "selected-acknowledged"].includes(mode)) {
-      const dt = new DataTransfer(); dt.items.add(new File(["private"], "personal.pdf"));
-      (provider === "chatgpt" ? inputs.find((input) => input.dataset.testid === "general-upload") : inputs[0]).files = dt.files;
-    }
+    let detachedOnce = false;
     function bindInput(input) {
+      if (input.dataset.bound) return;
+      input.dataset.bound = "1";
       input.addEventListener("change", () => {
         changes++;
         usedInputs.push(input.dataset.testid || provider);
@@ -78,8 +91,11 @@
           if (mode !== "async-upload") tile(file.name, file.type === "image/png");
         }
         input.value = "";
-        if (mode === "detached-text-input" && provider === "gemini" && input === inputs[0]) {
-          fixture.querySelector('images-files-uploader input[type="file"]')?.remove();
+        if (mode === "detached-text-input" && provider === "gemini" && !detachedOnce && input.accept.includes("image")) {
+          detachedOnce = true;
+          fixture.querySelectorAll('images-files-uploader input[type="file"], uploader > input[accept*=".txt"]').forEach((n) => n.remove());
+          const toggle = fixture.querySelector('simplified-input-menu button[aria-haspopup="menu"]');
+          toggle.setAttribute("aria-expanded", "false");
         }
         if (mode === "replace-editor") editor().replaceWith(editor().cloneNode(true));
         if (mode === "rerender-existing") original[0]?.replaceWith(original[0].cloneNode(true));
@@ -91,18 +107,38 @@
         if (mode === "progress") { const progress = document.createElement("div"); progress.setAttribute("role", "progressbar"); progress.textContent = "Uploading"; container.append(progress); }
       });
     }
-    for (const input of inputs) bindInput(input);
-    if (mode === "detached-text-input" && provider === "gemini") {
-      fixture.querySelector('simplified-input-menu button[aria-haspopup="menu"]').addEventListener("click", () => {
-        const uploader = fixture.querySelector("images-files-uploader");
-        if (!uploader.querySelector('input[type="file"]')) {
-          const fresh = document.createElement("input");
-          fresh.type = "file"; fresh.multiple = true; fresh.accept = ".txt,.pdf";
-          bindInput(fresh);
-          uploader.append(fresh);
+    const menuToggle = fixture.querySelector('simplified-input-menu button[aria-haspopup="menu"]');
+    if (provider === "gemini") {
+      menuToggle.addEventListener("click", () => {
+        const open = menuToggle.getAttribute("aria-expanded") === "true";
+        if (open) {
+          menuToggle.setAttribute("aria-expanded", "false");
+          if (geminiLazyMenu) fixture.querySelectorAll("uploader").forEach((u) => u.remove());
+          return;
         }
+        menuToggle.setAttribute("aria-expanded", "true");
+        if (mode === "no-input") return;
+        const holder = document.createElement("div");
+        holder.innerHTML = geminiUploaderMarkup();
+        const uploader = holder.firstElementChild;
+        const existingUploader = fixture.querySelector("uploader");
+        if (existingUploader) existingUploader.replaceWith(uploader);
+        else fixture.append(uploader);
+        uploader.querySelectorAll('input[type="file"]').forEach(bindInput);
       });
     }
+    const inputs = [...fixture.querySelectorAll('input[type="file"]')];
+    if (provider === "chatgpt") assert(inputs.length >= 2 && inputs[0].dataset.testid === "image-upload", "ChatGPT fixture has an image-only control before the general uploader");
+    if (["unresolved-selection", "selected-acknowledged"].includes(mode)) {
+      const dt = new DataTransfer(); dt.items.add(new File(["private"], "personal.pdf"));
+      const targetInput = provider === "chatgpt"
+        ? inputs.find((input) => input.dataset.testid === "general-upload")
+        : provider === "gemini"
+          ? inputs.find((input) => input.accept.includes("image"))
+          : inputs[0];
+      targetInput.files = dt.files;
+    }
+    for (const input of inputs) bindInput(input);
     fixture.querySelector("#send").addEventListener("click", () => submissions++);
     if (mode === "no-send") fixture.querySelector("#send").remove();
     if (mode === "wrong-url") payload.expectedUrl += "/changed";
@@ -117,7 +153,6 @@
     if (mode === "consent" && provider === "gemini") fixture.append(document.createElement("upload-image-disclaimer-dialog"));
     if (mode === "invalid-png") payload.screenshot = "data:text/plain;base64,aGVsbG8=";
     if (mode === "no-input") inputs.forEach((input) => input.remove());
-    if (mode === "no-text-input" && provider === "gemini") inputs[1].remove();
     if (mode === "disabled-input") inputs.forEach((input) => input.disabled = true);
     if (mode === "concurrent") globalThis.__pageCapturePreparing = "competing-operation";
     let result;
@@ -126,11 +161,14 @@
     } finally {
       if (mode === "concurrent") delete globalThis.__pageCapturePreparing;
     }
+    if (provider === "gemini") {
+      assert(menuToggle.getAttribute("aria-expanded") !== "true", mode + ": Gemini upload menu is closed after operation");
+    }
     return { result, uploaded, usedInputs, changes, payload, capture, initialText, draft: editor().innerHTML, existingPresent: !existing || tiles.textContent.includes("personal.pdf"), progressVisible: !!container.querySelector('[role="progressbar"]'), sendDisabled: fixture.querySelector("#send")?.disabled ?? true, count: tiles.children.length, initialCount: original.length, repeat: () => prepare({ ...payload, deadline: Date.now() + 140000 }), currentChanges: () => changes, forget: () => globalThis.__pageRelayPreparations.clear(), removeOwn: () => tiles.lastElementChild.remove() };
   }
   try {
     for (const includeText of [false, true]) {
-    for (const mode of ["empty", "text", "attachment", "both", "multiple", "no-send", "replace-editor", "rerender-existing", "selected-acknowledged", "progress", "async-upload", "late-upload-error", "empty-ui", "modern", ...(provider === "gemini" && !includeText ? ["no-text-input"] : []), ...(provider === "gemini" && includeText ? ["detached-text-input"] : [])]) {
+    for (const mode of ["empty", "text", "attachment", "both", "multiple", "no-send", "replace-editor", "rerender-existing", "selected-acknowledged", "progress", "async-upload", "late-upload-error", "empty-ui", "modern", ...(provider === "gemini" ? ["gemini-mobile", "gemini-turkish", "gemini-unified", "gemini-legacy", ...(!includeText ? ["no-text-input"] : ["detached-text-input"])] : [])]) {
       const value = await run(mode, includeText, mode === "multiple");
       assert(value.result.prepared, mode + ": prepared (" + JSON.stringify(value.result) + ")");
       assert(value.draft === value.initialText && value.existingPresent, mode + ": existing rich text and attachments preserved");

@@ -9,6 +9,7 @@ const BOTTOM_WAIT_MS = 1500;
 const MAX_CAPTURE_SEGMENTS = 200;
 const MAX_LAYOUT_RETRIES = 2;
 const LAYOUT_RETRY_SETTLE_MS = 600;
+const TAB_RETRY_DELAYS_MS = [150, 250, 400, 600];
 // Leave headroom for Chrome's canvas limits and memory, especially on Retina screens.
 const MAX_CANVAS_SIDE = 32767;
 const MAX_CANVAS_PIXELS = 64 * 1024 * 1024;
@@ -16,6 +17,44 @@ let lastCaptureTime = 0;
 let capturedPage = null;
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isTransientTabError(error) {
+  const message = String(error?.message ?? error ?? "");
+  return /tabs cannot be edited right now|cannot be edited right now|dragging a tab/i.test(
+    message,
+  );
+}
+
+async function retryTabOperation(operation, action, beforeRetry) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (attempt > 0 && beforeRetry) await beforeRetry();
+      return await action();
+    } catch (error) {
+      if (!isTransientTabError(error) || attempt >= TAB_RETRY_DELAYS_MS.length) {
+        if (isTransientTabError(error)) {
+          const wrapped = new Error(
+            "Chrome tabs are temporarily busy (for example while dragging a tab). Release the tab, then click Recapture.",
+          );
+          wrapped.transientTab = true;
+          wrapped.diagnostic = {
+            reason: "tab-strip-busy",
+            operation,
+            attempts: attempt + 1,
+            cause: error.message,
+          };
+          throw wrapped;
+        }
+        throw error;
+      }
+      console.warn?.(
+        "[Page Relay] Retrying after temporary Chrome tab lock:",
+        { operation, attempt: attempt + 1, cause: error.message },
+      );
+      await delay(TAB_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
 
 async function sendToPage(tabId, message) {
   const response = await chrome.tabs.sendMessage(tabId, message, {
@@ -199,15 +238,20 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       );
     }
 
-    const [activeTab] = await chrome.tabs.query({
-      active: true,
-      windowId: tab.windowId,
-    });
-    if (activeTab?.id !== tab.id)
-      throw new Error("Keep the captured tab active.");
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
-      format: "png",
-    });
+    async function requireActiveSourceTab() {
+      const [activeTab] = await chrome.tabs.query({
+        active: true,
+        windowId: tab.windowId,
+      });
+      if (activeTab?.id !== tab.id)
+        throw new Error("Keep the captured tab active.");
+    }
+    await requireActiveSourceTab();
+    const dataUrl = await retryTabOperation(
+      "captureVisibleTab",
+      () => chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" }),
+      requireActiveSourceTab,
+    );
     lastCaptureTime = Date.now();
     const [activeAfterCapture] = await chrome.tabs.query({
       active: true,
@@ -701,12 +745,14 @@ async function resolveRecaptureTab() {
   if (latest.active === false) {
     try {
       if (chrome.windows?.update) {
-        await chrome.windows
-          .update(latest.windowId, { focused: true })
-          .catch(() => {});
+        await retryTabOperation("focus-source-window", () =>
+          chrome.windows.update(latest.windowId, { focused: true }),
+        ).catch(() => {});
       }
       if (chrome.tabs?.update) {
-        await chrome.tabs.update(latest.id, { active: true });
+        await retryTabOperation("activate-source-tab", () =>
+          chrome.tabs.update(latest.id, { active: true }),
+        );
       } else {
         throw new Error("Tab activation is unavailable.");
       }
@@ -723,7 +769,7 @@ async function resolveRecaptureTab() {
         throw error;
       }
     } catch (cause) {
-      if (cause?.expected) throw cause;
+      if (cause?.expected || cause?.transientTab) throw cause;
       const error = new Error(
         "Could not switch back to the source tab automatically. Activate it, then click Recapture.",
       );
@@ -801,7 +847,12 @@ async function runPanelCapture(sourceTab) {
     setStatus("success", "", "");
     await destinationUI.show(result);
   } catch (error) {
-    if (!isExpectedCaptureError(error)) {
+    if (error?.transientTab) {
+      console.warn?.(
+        "[Page Relay] Capture paused by temporary Chrome tab lock:",
+        error.diagnostic || error.message,
+      );
+    } else if (!isExpectedCaptureError(error)) {
       if (error?.diagnostic) {
         console.error("[Page Relay] Capture failed:", error.message, error.diagnostic);
       } else {

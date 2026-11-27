@@ -152,17 +152,104 @@ async function prepareFilesInComposer(payload) {
       throw new Error("A file selection has not finished loading. Wait for its attachments to appear, then retry.");
     return input;
   }
-  async function geminiInput(selector) {
-    check();
-    let nodes = [...document.querySelectorAll(selector)];
-    if (!nodes.length) {
-      const toggle = root()?.querySelector('simplified-input-menu button[aria-haspopup="menu"]');
-      if (!visible(toggle)) throw new Error("Gemini’s upload menu is unavailable. Open the tab, then retry.");
-      if (toggle.getAttribute("aria-expanded") !== "true") toggle.click();
-      if (!await until(() => { nodes = [...document.querySelectorAll(selector)]; return nodes.length > 0; }, 10000))
-        throw new Error("Gemini’s upload control did not appear.");
+  let geminiMenuToggle = null;
+  function closeGeminiMenu() {
+    if (
+      geminiMenuToggle &&
+      geminiMenuToggle.isConnected &&
+      geminiMenuToggle.getAttribute("aria-expanded") === "true"
+    ) {
+      geminiMenuToggle.click();
     }
-    return validateInput(nodes);
+    geminiMenuToggle = null;
+  }
+  function geminiCandidates(selector) {
+    return [...document.querySelectorAll(selector)].filter(
+      (node) => node.multiple && !node.hasAttribute("capture"),
+    );
+  }
+  function findGeminiControls() {
+    const directImageInputs = geminiCandidates('uploader input[type="file"]').filter(
+      (node) =>
+        !node.closest("images-files-uploader") &&
+        node.accept &&
+        accepts(node, ".png", "image/png") &&
+        !accepts(node, ".txt", "text/plain"),
+    );
+    const directTextInputs = geminiCandidates(
+      'images-files-uploader > input[type="file"]',
+    ).filter((node) => accepts(node, ".txt", "text/plain"));
+    const uploaderTextInputs = geminiCandidates(
+      'uploader > input[type="file"]',
+    ).filter(
+      (node) =>
+        node.accept &&
+        accepts(node, ".txt", "text/plain") &&
+        !accepts(node, ".png", "image/png"),
+    );
+    const unifiedInputs = geminiCandidates(
+      'images-files-uploader input[type="file"], uploader input[type="file"]',
+    ).filter(
+      (node) =>
+        accepts(node, ".png", "image/png") &&
+        (!includeText || accepts(node, ".txt", "text/plain")),
+    );
+    if (directImageInputs.length === 1) {
+      if (!includeText) return { mode: "separate", imageInputs: directImageInputs };
+      const textInputs =
+        directTextInputs.length === 1
+          ? directTextInputs
+          : uploaderTextInputs.length === 1
+            ? uploaderTextInputs
+            : unifiedInputs.length === 1
+              ? unifiedInputs
+              : [];
+      if (textInputs.length === 1) {
+        return { mode: "separate", imageInputs: directImageInputs, textInputs };
+      }
+      return null;
+    }
+    if (unifiedInputs.length === 1) {
+      return { mode: "unified", inputs: unifiedInputs };
+    }
+    return null;
+  }
+  async function resolveGeminiControls() {
+    check();
+    let controls = findGeminiControls();
+    if (!controls) {
+      const toggle = root()?.querySelector(
+        'simplified-input-menu button[aria-haspopup="menu"], uploader button[aria-haspopup="menu"]',
+      );
+      if (!visible(toggle))
+        throw new Error(
+          "Gemini’s upload menu is unavailable. Open the tab, then retry.",
+        );
+      if (toggle.getAttribute("aria-expanded") !== "true") {
+        toggle.click();
+        geminiMenuToggle = toggle;
+      }
+      if (
+        !(await until(() => {
+          controls = findGeminiControls();
+          return Boolean(controls);
+        }, 10000))
+      ) {
+        const anyImage = geminiCandidates('uploader input[type="file"]').some(
+          (node) => accepts(node, ".png", "image/png"),
+        );
+        if (includeText && anyImage) {
+          throw new Error("Gemini’s upload control does not accept TXT files.");
+        }
+        throw new Error("Gemini’s upload control did not appear.");
+      }
+    }
+    if (controls.mode === "unified") {
+      return { mode: "unified", input: validateInput(controls.inputs) };
+    }
+    const imageInput = validateInput(controls.imageInputs);
+    const textInput = includeText ? validateInput(controls.textInputs) : null;
+    return { mode: "separate", imageInput, textInput };
   }
   function upload(input, files) {
     check();
@@ -206,19 +293,22 @@ async function prepareFilesInComposer(payload) {
     const png = new File([bytes], payload.png, { type: "image/png" });
     const txt = includeText ? new File([payload.text], payload.txt, { type: "text/plain" }) : null;
     if (provider === "gemini") {
-      const imageInput = await geminiInput('uploader input[type="file"][accept="image/*"]');
-      let textInput = null;
-      if (includeText) {
-        textInput = await geminiInput('images-files-uploader input[type="file"]');
-        if (!accepts(textInput, ".txt", "text/plain")) throw new Error("Gemini’s upload control does not accept TXT files.");
-      }
-      upload(imageInput, [png]);
-      if (includeText) {
-        if (!textInput.isConnected || textInput.disabled) {
-          textInput = await geminiInput('images-files-uploader input[type="file"]');
-          if (!accepts(textInput, ".txt", "text/plain")) throw new Error("Gemini’s upload control does not accept TXT files.");
+      const controls = await resolveGeminiControls();
+      if (controls.mode === "unified") {
+        upload(controls.input, includeText ? [png, txt] : [png]);
+      } else {
+        upload(controls.imageInput, [png]);
+        if (includeText) {
+          let textInput = controls.textInput;
+          if (!textInput?.isConnected || textInput.disabled) {
+            const refreshed = await resolveGeminiControls();
+            textInput =
+              refreshed.mode === "unified"
+                ? refreshed.input
+                : refreshed.textInput;
+          }
+          upload(textInput, [txt]);
         }
-        upload(textInput, [txt]);
       }
     } else {
       let inputs;
@@ -239,6 +329,7 @@ async function prepareFilesInComposer(payload) {
   } catch (error) {
     return { prepared: false, needsReview: changed || userEdited, error: error.message };
   } finally {
+    if (provider === "gemini") closeGeminiMenu();
     for (const event of events) document.removeEventListener(event, observeEdit, true);
     if (locked && globalThis.__pageCapturePreparing === payload.deliveryId) delete globalThis.__pageCapturePreparing;
   }

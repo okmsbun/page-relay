@@ -67,9 +67,14 @@ function geminiHarness({
   injectError,
   switchDuringPreparation = false,
   activationError = false,
+  transientActivationFailures = 0,
+  transientRestoreFailures = 0,
   stalledRestore = false,
 } = {}) {
   let activeId = 1;
+  let injections = 0;
+  let activationFailsLeft = transientActivationFailures;
+  let restoreFailsLeft = transientRestoreFailures;
   const calls = [];
   const destination = {
     id: 2,
@@ -78,7 +83,18 @@ function geminiHarness({
     providerId: "gemini",
   };
   const context = vm.createContext({
-    setTimeout: (fn, ms) => setTimeout(fn, stalledRestore ? 10 : ms), clearTimeout,
+    setTimeout: (fn, ms) =>
+      setTimeout(
+        fn,
+        ms === 2000
+          ? stalledRestore
+            ? 10
+            : 2000
+          : transientActivationFailures || transientRestoreFailures
+            ? 5
+            : ms,
+      ),
+    clearTimeout,
     crypto: { randomUUID: () => "unique-test-id" },
     ChatDestinations: { validate: async () => {} },
     chrome: {
@@ -86,6 +102,18 @@ function geminiHarness({
         query: async () => stalledRestore && activeId === 2 ? new Promise(() => {}) : [{ id: activeId }],
         update: async (id, options) => {
           if (activationError) throw new Error("Tab closed");
+          if (id === 2 && activationFailsLeft > 0) {
+            activationFailsLeft--;
+            throw new Error(
+              "Tabs cannot be edited right now (user may be dragging a tab).",
+            );
+          }
+          if (id === 1 && restoreFailsLeft > 0) {
+            restoreFailsLeft--;
+            throw new Error(
+              "Tabs cannot be edited right now (user may be dragging a tab).",
+            );
+          }
           assert.equal(options.active, true);
           calls.push(id);
           activeId = id;
@@ -93,6 +121,7 @@ function geminiHarness({
       },
       scripting: {
         executeScript: async (options) => {
+          injections++;
           assert.equal(options.target.tabId, 2);
           assert.equal(options.args[0].text, undefined);
           assert.equal(
@@ -114,6 +143,7 @@ function geminiHarness({
   const prepare = vm.runInContext("prepareInGemini", context);
   return {
     calls,
+    injections: () => injections,
     run: () =>
       prepare(destination, {
         screenshot: "data:image/png;base64,test",
@@ -158,6 +188,28 @@ test("Gemini activation failure before injection is a definite failure, not need
     fixture.run(),
     (error) => error.message === "Tab closed" && error.needsReview === false,
   );
+  assert.deepEqual(fixture.calls, []);
+});
+test("Gemini retries transient Chrome tab lock during activation and restoration with single injection", async () => {
+  const fixture = geminiHarness({
+    transientActivationFailures: 2,
+    transientRestoreFailures: 1,
+  });
+  assert.equal((await fixture.run()).prepared, true);
+  assert.equal(fixture.injections(), 1);
+  assert.deepEqual(fixture.calls, [2, 1]);
+});
+test("Gemini persistent Chrome tab lock before injection reports retryable busy with zero injections", async () => {
+  const fixture = geminiHarness({ transientActivationFailures: 10 });
+  await assert.rejects(
+    fixture.run(),
+    (error) =>
+      error.busy === true &&
+      error.needsReview === false &&
+      error.transientTab === true &&
+      error.diagnostic?.reason === "tab-strip-busy",
+  );
+  assert.equal(fixture.injections(), 0);
   assert.deepEqual(fixture.calls, []);
 });
 
