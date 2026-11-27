@@ -1,0 +1,157 @@
+name: Release Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Verify version and tag alignment
+        id: meta
+        run: |
+          version=$(node -p 'require("./manifest.json").version')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            expected="v$version"
+            if [[ "$GITHUB_REF_NAME" != "$expected" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match manifest.json version $version (expected $expected)" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Check syntax and manifest integrity
+        run: |
+          for file in *.js tests/*.js tests/*.cjs; do
+            node --check "$file"
+          done
+          bash -n scripts/package.sh
+
+      - name: Run unit tests
+        run: node --test tests/*.test.cjs
+
+      - name: Locate Google Chrome
+        id: chrome
+        run: |
+          chrome_bin="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium || true)"
+          if [[ -z "$chrome_bin" ]]; then
+            echo "Google Chrome binary not found on runner" >&2
+            exit 1
+          fi
+          echo "bin=$chrome_bin" >> "$GITHUB_OUTPUT"
+
+      - name: Run browser and native control tests
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.bin }}
+        run: |
+          node tests/browser-check.cjs
+          node tests/provider-controls.cjs
+
+  package:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build and validate Chrome Web Store ZIP
+        run: |
+          zip_name=$(bash scripts/package.sh)
+          expected="pagerelay-${{ needs.validate.outputs.version }}.zip"
+          if [[ "$zip_name" != "$expected" ]]; then
+            echo "Unexpected archive name: $zip_name (expected $expected)" >&2
+            exit 1
+          fi
+          unzip -l "$zip_name"
+          node - "$zip_name" "${{ needs.validate.outputs.version }}" <<'EOF'
+          const assert = require("node:assert/strict");
+          const { execFileSync } = require("node:child_process");
+
+          const [zipName, expectedVersion] = process.argv.slice(2);
+          const entries = execFileSync("zipinfo", ["-1", zipName], { encoding: "utf8" })
+            .trim()
+            .split("\n")
+            .filter(Boolean);
+
+          assert.ok(entries.includes("manifest.json"), "manifest.json must be at ZIP root");
+          assert.ok(!entries.some((e) => e.startsWith("release/")), "ZIP must not wrap files in release/");
+          for (const forbidden of [
+            /^tests\//,
+            /^scripts\//,
+            /^docs\//,
+            /^\.github\//,
+            /\.md$/i,
+            /^LICENSE$/,
+            /icon-1024\.png$/,
+            /\.DS_Store$/,
+          ]) {
+            assert.ok(
+              !entries.some((e) => forbidden.test(e)),
+              `forbidden file found in ZIP matching ${forbidden}`,
+            );
+          }
+
+          const manifest = JSON.parse(
+            execFileSync("unzip", ["-p", zipName, "manifest.json"], { encoding: "utf8" }),
+          );
+          assert.equal(manifest.version, expectedVersion);
+          console.log(`PASS ${zipName} validated (${entries.length} files, v${manifest.version})`);
+          EOF
+          sha256sum "$zip_name" > "$zip_name.sha256"
+
+      - name: Upload release package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pagerelay-${{ needs.validate.outputs.version }}
+          path: |
+            pagerelay-${{ needs.validate.outputs.version }}.zip
+            pagerelay-${{ needs.validate.outputs.version }}.zip.sha256
+          if-no-files-found: error
+
+  github-release:
+    needs: [validate, package]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pagerelay-${{ needs.validate.outputs.version }}
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ needs.validate.outputs.version }}"
+          gh release create "$GITHUB_REF_NAME" \
+            "pagerelay-$version.zip" \
+            "pagerelay-$version.zip.sha256" \
+            --title "Page Relay v$version" \
+            --generate-notes

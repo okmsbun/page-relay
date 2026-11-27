@@ -1,0 +1,50 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run unit tests
+        run: node --test tests/*.test.cjs
+
+      - name: Locate Google Chrome
+        id: chrome
+        run: |
+          chrome_bin="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium || true)"
+          if [[ -z "$chrome_bin" ]]; then
+            echo "Google Chrome binary not found on runner" >&2
+            exit 1
+          fi
+          "$chrome_bin" --version
+          echo "bin=$chrome_bin" >> "$GITHUB_OUTPUT"
+
+      - name: Run headless Chrome browser fixtures
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.bin }}
+        run: node tests/browser-check.cjs
+
+      - name: Run native pointer and keyboard provider control tests
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.bin }}
+        run: node tests/provider-controls.cjs

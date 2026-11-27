@@ -9,6 +9,7 @@ const { pathToFileURL } = require("node:url");
 const profile = mkdtempSync(path.join(tmpdir(), "capture-browser-"));
 const child = spawn(process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", [
   "--headless", "--disable-gpu", "--disable-background-networking", "--disable-component-update",
+  ...(process.env.CI ? ["--no-sandbox"] : []),
   "--no-first-run", "--no-default-browser-check", `--user-data-dir=${profile}`,
   "--allow-file-access-from-files", "--remote-debugging-pipe", "about:blank",
 ], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });

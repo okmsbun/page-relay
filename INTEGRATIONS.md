@@ -131,7 +131,7 @@ used to identify the source tab and classify protected pages.
 Provider tabs are derived from the latest matching open conversations, never
 from the whole registry. When the destination list is initially populated for a
 capture, the first eligible conversation is selected by default (skipping
-unavailable tabs) so **Add to 1 chat** is ready immediately; manual selection
+unavailable tabs) so **Add screenshot** is ready immediately; manual selection
 changes are respected across refreshes, and a fresh capture/recapture applies
 default selection again. Refresh adds new providers, removes closed providers,
 and selects a remaining provider if the active one disappears. Selections on
@@ -189,12 +189,13 @@ copied into the new batch. A native selection not yet represented by rendered
 attachments is rejected before replacing that input's selection. Existing upload
 progress is Busy and can be retried manually once finished.
 
-Completion means Page Relay validated preflight state, handed off the expected
-file(s) (PNG, plus TXT when selected) to the provider's upload control(s) and
-dispatched the change event, and confirmed no immediate handoff error, consent
-dialog, draft edit, unexpected extra attachment, or loss of existing attachments
-occurred. Page Relay reports success (`prepared: true`) and displays **Added**
-immediately after handoff. It does not wait for the provider to finish uploading,
+Completion means Page Relay validated preflight state, handed off the requested
+file(s) (PNG, TXT, or both) to the provider's upload control(s) and dispatched
+the change event, and confirmed no immediate handoff error, consent dialog,
+draft edit, unexpected extra attachment, or loss of existing attachments
+occurred. Page Relay reports success (`prepared: true`) and immediately shows
+the delivered status (**Screenshot added**, **Page text added**, or **Screenshot
+and text added**) after handoff. It does not wait for the provider to finish uploading,
 processing, rendering previews, or enabling Send, and it does not monitor or
 report subsequent provider-side upload failures; the provider continues
 independently. Changes by the user or provider during handoff result in Needs
@@ -295,14 +296,17 @@ authenticated provider end-to-end tests. No real messages are sent by these test
 2. Open disposable ChatGPT, Claude and Gemini conversations, including an empty
    new chat. Open the panel on a nonsensitive source page, let capture finish,
    leave **Include page text** off, select destinations across provider tabs,
-   then click **Add to N chats**. Confirm only one PNG was added per chat and
-   the editor stays empty, and **nothing was submitted**: no new user
-   turn, no generation. The panel must show **Added**. Test a new chat's URL
-   transition as well.
-3. Repeat with **Include page text** on for each provider, with existing text,
-   existing attachments, and both. Original text and attachments must remain
-   unchanged; only the new PNG/TXT are added and the result is Added. Verify TXT
-   metadata and the unchanged extracted
+   then click **Add screenshot** (or **Add screenshot to N chats**). Confirm
+   only one PNG was added per chat, the editor stays empty, and **nothing was
+   submitted**: no new user turn, no generation. The panel must show
+   **Screenshot added**. Test enabling **Include page text** afterward and
+   clicking **Add page text** to confirm only the missing TXT is added without
+   resending the PNG (status updates to **Screenshot and text added**). Test a
+   new chat's URL transition as well.
+3. Repeat with **Include page text** on from the start for each provider, with
+   existing text, existing attachments, and both. Original text and attachments
+   must remain unchanged; only the new PNG/TXT are added and the result is
+   **Screenshot and text added**. Verify TXT metadata and the unchanged extracted
    body, then repeat the Add action to check that no duplicate files appear.
    During another attempt, edit the draft: the result must be Needs review and
    the edit must remain untouched.

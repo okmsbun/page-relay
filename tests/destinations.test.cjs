@@ -344,7 +344,7 @@ test("manifest grants activeTab source access and only supported provider hosts"
     "storage",
     "tabs",
   ]);
-  assert.equal(manifest.version, "0.1.3");
+  assert.equal(manifest.version, "1.0.0");
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.side_panel.default_path, "sidepanel.html");
   assert.equal(manifest.action.default_popup, undefined);

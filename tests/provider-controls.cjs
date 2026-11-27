@@ -9,6 +9,7 @@ const assert = require("node:assert/strict");
 const profile = mkdtempSync(path.join(tmpdir(), "pagerelay-controls-"));
 const child = spawn(process.env.CHROME_BIN || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", [
   "--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+  ...(process.env.CI ? ["--no-sandbox"] : []),
   "--disable-background-networking", "--disable-component-update", "--allow-file-access-from-files",
   "--remote-debugging-pipe", `--user-data-dir=${profile}`, "about:blank",
 ], { stdio: ["ignore", "ignore", "ignore", "pipe", "pipe"] });

@@ -1,0 +1,91 @@
+name: Quality
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check JavaScript syntax
+        run: |
+          for file in *.js tests/*.js tests/*.cjs; do
+            node --check "$file"
+          done
+
+      - name: Check shell script syntax
+        run: bash -n scripts/package.sh
+
+      - name: Validate manifest and runtime file integrity
+        run: |
+          node - <<'EOF'
+          const assert = require("node:assert/strict");
+          const fs = require("node:fs");
+
+          const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          assert.equal(manifest.manifest_version, 3, "manifest_version must be 3");
+          assert.match(manifest.version, /^[0-9]+(?:\.[0-9]+){0,3}$/, "invalid Chrome version");
+          assert.deepEqual(manifest.permissions, [
+            "activeTab",
+            "scripting",
+            "sidePanel",
+            "storage",
+            "tabs",
+          ]);
+          assert.ok(
+            !manifest.host_permissions.includes("<all_urls>"),
+            "must not request <all_urls>",
+          );
+
+          const required = new Set([
+            "manifest.json",
+            manifest.background.service_worker,
+            manifest.side_panel.default_path,
+            ...Object.values(manifest.icons),
+            ...Object.values(manifest.action.default_icon),
+          ]);
+
+          const html = fs.readFileSync(manifest.side_panel.default_path, "utf8");
+          for (const match of html.matchAll(/<script\s+src="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+          for (const match of html.matchAll(/<link\s+[^>]*href="([^"]+)"/g)) {
+            required.add(match[1]);
+          }
+
+          const panelJs = fs.readFileSync("panel.js", "utf8");
+          const injectMatch = panelJs.match(/files:\s*\[([^\]]+)\]/);
+          assert.ok(injectMatch, "expected injected capture script list in panel.js");
+          for (const item of injectMatch[1].matchAll(/"([^"]+)"/g)) {
+            required.add(item[1]);
+          }
+
+          const packageScript = fs.readFileSync("scripts/package.sh", "utf8");
+          for (const file of required) {
+            assert.ok(fs.existsSync(file), `missing runtime file: ${file}`);
+            assert.ok(
+              packageScript.includes(file),
+              `runtime file missing from scripts/package.sh: ${file}`,
+            );
+          }
+
+          console.log(`PASS manifest v${manifest.version} and ${required.size} runtime files verified`);
+          EOF
