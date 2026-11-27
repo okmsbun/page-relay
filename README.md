@@ -53,13 +53,17 @@ extension has no partially implemented provider entries.
    automatically; keep the source tab active until it finishes.
 3. Optionally turn on **Include page text**. It starts off for every new capture.
 4. Click **Refresh** and select one or more open AI conversations.
-5. Click **Add to N chats**. The PNG is prepared in each selected chat; TXT is
-   added only when **Include page text** is on.
-6. Review each chat's draft and press Send there yourself.
+5. Click **Add to N chats**. Page Relay hands off the PNG (and TXT when
+   **Include page text** is on) to each selected chat and immediately reports
+   **Added** while the provider finishes uploading and processing the files.
+6. Review each chat's draft once the provider finishes processing, and press
+   Send there yourself.
 
 When included, TXT contains the page title, source URL, an optional truncation
 note, and the unchanged extracted text; no delivery ID is written into it.
-Existing drafts and attachments remain in place.
+Existing drafts and attachments remain in place. **Added** means Page Relay
+successfully handed off the attachments to the target chat; it does not wait for
+provider-side upload completion or monitor later provider-side upload failures.
 ChatGPT and Claude preparations can run concurrently; Gemini follows with
 coordinated tab activation. If a result says **Needs review**, inspect that chat
 before trying another action.

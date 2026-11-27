@@ -125,7 +125,7 @@ const ChatDestinations = (() => {
   }
 
   // The caller must supply an approved preparation implementation. A resolved
-  // promise alone is never treated as proof that the composer holds the capture.
+  // promise alone is never treated as proof that the attachments were handed off.
   const preparationTimeoutMs = 150000;
   const captures = new WeakMap();
   const active = new Map();

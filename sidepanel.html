@@ -12,43 +12,22 @@
 
 <body data-state="idle">
   <header class="header">
-    <img class="app-icon" src="assets/icons/icon-48.png"
-      srcset="assets/icons/icon-48.png 1x, assets/icons/icon-128.png 2x" width="36" height="36" alt="">
-    <h1>Page Relay</h1>
+    <div class="brand">
+      <img class="app-icon" src="assets/icons/icon-48.png"
+        srcset="assets/icons/icon-48.png 1x, assets/icons/icon-128.png 2x" width="28" height="28" alt="">
+      <h1>Page Relay</h1>
+    </div>
+    <span class="session-badge" aria-hidden="true"></span>
   </header>
 
   <main>
-    <section class="preview-card" aria-label="Screenshot preview">
-      <div id="previewToolbar" class="preview-toolbar" hidden>
-        <span id="previewLabel">Screenshot</span>
-        <button id="zoomPreview" class="zoom-button" type="button" aria-pressed="false"
-          aria-label="Show screenshot at actual size">100%</button>
-      </div>
-      <div id="emptyState" class="empty-state">
-        <h2>Preparing preview…</h2>
-      </div>
-      <div id="previewViewport" class="preview-viewport" tabindex="0" aria-label="Scrollable screenshot preview" hidden>
-        <img id="preview" alt="Captured full-page screenshot">
-      </div>
-      <div id="imageMeta" class="image-meta" hidden></div>
-    </section>
-
-    <details id="pageText" class="page-text" hidden>
-      <summary><span>Page text</span><span class="text-metrics"><span id="textCharacters"
-            class="text-characters">0 chars</span></span><span class="text-chevron" aria-hidden="true">⌄</span>
-      </summary>
-      <div class="text-content">
-        <pre id="textPreview" tabindex="0" aria-label="Extracted page text"></pre>
-      </div>
-    </details>
-
     <section class="capture-status" aria-live="polite" aria-atomic="true">
       <span class="status-icon" aria-hidden="true">
         <svg viewBox="0 0 20 20">
           <path id="statusGlyph" d="M5 10l3 3 7-7" />
         </svg>
       </span>
-      <div>
+      <div class="status-copy">
         <h2 id="statusTitle"></h2>
         <p id="statusDetail"></p>
       </div>
@@ -58,14 +37,77 @@
       <div id="progressFill"></div>
     </div>
 
+    <section class="preview-card" aria-label="Screenshot preview">
+      <div id="previewToolbar" class="preview-toolbar" hidden>
+        <span id="previewLabel" class="preview-label">
+          <svg class="inline-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2" y="3" width="12" height="10" rx="2" />
+            <circle cx="5.75" cy="6.75" r="1.1" />
+            <path d="M3.5 11.5l3.2-3 2.1 2 1.7-1.6 2 2.6" />
+          </svg>
+          Screenshot
+        </span>
+        <button id="zoomPreview" class="secondary-button zoom-button" type="button" aria-pressed="false"
+          aria-label="Show screenshot at actual size">100%</button>
+      </div>
+      <div id="emptyState" class="empty-state">
+        <div class="empty-glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <rect x="3.5" y="4.5" width="17" height="15" rx="3" />
+            <path d="M7.5 9h9M7.5 12.5h6M7.5 16h4" />
+          </svg>
+        </div>
+        <h2>Preparing preview…</h2>
+      </div>
+      <div id="previewViewport" class="preview-viewport" tabindex="0" aria-label="Scrollable screenshot preview" hidden>
+        <img id="preview" alt="Captured full-page screenshot">
+      </div>
+      <div id="imageMeta" class="image-meta" hidden></div>
+    </section>
+
+    <details id="pageText" class="page-text" hidden>
+      <summary>
+        <span class="page-text-label">
+          <svg class="inline-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M4 2.5h5.5L12.5 5.5v8a1 1 0 0 1-1 1h-7.5a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1z" />
+            <path d="M9.5 2.5v3h3M5.5 8.5h5M5.5 11h3.5" />
+          </svg>
+          Page text
+        </span>
+        <span class="text-metrics"><span id="textCharacters" class="text-characters">0 chars</span></span>
+        <svg class="text-chevron" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M4.5 6.25L8 9.75l3.5-3.5" />
+        </svg>
+      </summary>
+      <div class="text-content">
+        <pre id="textPreview" tabindex="0" aria-label="Extracted page text"></pre>
+      </div>
+    </details>
+
     <section id="destinations" class="destinations" aria-label="AI conversation destinations" hidden>
       <div class="destination-heading">
         <h2>Add to chat</h2>
-        <button id="refreshDestinations" class="zoom-button" type="button">Refresh</button>
+        <button id="refreshDestinations" class="secondary-button refresh-button" type="button">
+          <svg class="inline-icon refresh-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M13 8a5 5 0 1 1-1.35-3.42M13 3v2.5h-2.5" />
+          </svg>
+          <span>Refresh</span>
+        </button>
       </div>
-      <label class="include-page-text"><input id="includePageText" type="checkbox"> Include page text</label>
+      <label class="include-page-text">
+        <span class="include-copy">
+          <span class="include-title">Include page text</span>
+          <span class="include-tag">.txt</span>
+        </span>
+        <input id="includePageText" class="toggle-switch" type="checkbox">
+      </label>
       <div id="providerTabs" class="provider-tabs" role="tablist" aria-label="AI providers"></div>
       <div id="noDestinations" class="no-destinations" hidden>
+        <div class="empty-chats-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M5.5 6.5h13a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H10l-4.5 3v-3a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2z" />
+          </svg>
+        </div>
         <h3>No AI chats open</h3>
         <p>Open an AI conversation in Chrome, then refresh.</p>
       </div>
@@ -73,8 +115,10 @@
         aria-label="Find a conversation" hidden>
       <div id="destinationList" class="destination-list" role="tabpanel" tabindex="0" aria-label="Open conversations">
       </div>
-      <p id="destinationNote" class="destination-note" role="status" aria-live="polite"></p>
-      <button id="sendCapture" class="capture-button" type="button" disabled>Select conversations</button>
+      <div class="destination-actions">
+        <p id="destinationNote" class="destination-note" role="status" aria-live="polite"></p>
+        <button id="sendCapture" class="capture-button" type="button" disabled>Select conversations</button>
+      </div>
     </section>
   </main>
   <script src="capture-layout.js"></script>

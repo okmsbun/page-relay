@@ -61,6 +61,8 @@ const destinationUI = (() => {
       for (const item of items) {
         const row = document.createElement("div");
         row.className = "destination-row";
+        const status = statuses.get(item.id);
+        row.dataset.state = status?.state || (item.unavailable ? "unavailable" : "ready");
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.id = `destination-${item.id}`;
@@ -74,7 +76,7 @@ const destinationUI = (() => {
           discovering ||
           !!item.unavailable ||
           ["prepared", "review", "unsupported"].includes(
-            statuses.get(item.id)?.state,
+            status?.state,
           );
         checkbox.addEventListener("change", () => {
           checkbox.checked ? selection.add(item.id) : selection.delete(item.id);
@@ -92,7 +94,6 @@ const destinationUI = (() => {
         details.className = "destination-detail";
         details.textContent = item.label;
         description.append(title, details);
-        const status = statuses.get(item.id);
         if (status || item.unavailable) {
           const state = status?.state || "unavailable";
           const labels = {
@@ -241,6 +242,7 @@ const destinationUI = (() => {
     discovering = true;
     discoveryError = false;
     refreshButton.disabled = true;
+    refreshButton.dataset.discovering = "true";
     sendButton.disabled = true;
     note.textContent = "Finding conversations…";
     render();
@@ -287,6 +289,7 @@ const destinationUI = (() => {
       if (version === generation) {
         discovering = false;
         refreshButton.disabled = false;
+        delete refreshButton.dataset.discovering;
         render();
       }
     }

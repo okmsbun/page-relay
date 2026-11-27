@@ -73,12 +73,13 @@ symbol fallback; no third-party favicon service or extra permission is used.
 
 ## Current capability
 
-This extension **prepares** a chat: it attaches the full-page PNG and, when
-**Include page text** is on, the extracted page text with a title/URL header.
-The toggle defaults off for each new capture. Existing composer content is
-preserved. It never submits: no Send click, no Enter/Return, and no model
-generation. The user reviews the draft and sends it. "Added" therefore means
-"the capture is in that chat's draft".
+This extension **prepares** a chat: it hands off the full-page PNG and, when
+**Include page text** is on, the extracted page text with a title/URL header to
+the selected chat's upload control. The toggle defaults off for each new capture.
+Existing composer content is preserved. It never submits: no Send click, no
+Enter/Return, and no model generation. The user reviews the draft and sends it.
+"Added" therefore means Page Relay successfully handed off the attachments to
+that chat; the provider continues uploading and processing them independently.
 
 | Provider | Recognized chat routes                          | Composer preparation                                                                                                |
 | -------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -155,24 +156,33 @@ copied into the new batch. A native selection not yet represented by rendered
 attachments is rejected before replacing that input's selection. Existing upload
 progress is Busy and can be retried manually once finished.
 
-Completion requires one matching new PNG, plus one matching new TXT when selected,
-no visible upload progress/error, unchanged editor content, and preservation of the
-original attachment set. The expected count rises by one with text off or two with text on.
-Changes by the user or provider during preparation result in Needs review; no
-restoration or automatic retry overwrites user work. A provider that replaces
-existing attachment state instead of appending is detected and reported for review.
-This verification cannot reconstruct files removed internally by a changed provider
-UI; the live append checks below are required for current account/UI variants.
+Completion means Page Relay validated preflight state, handed off the expected
+file(s) (PNG, plus TXT when selected) to the provider's upload control(s) and
+dispatched the change event, and confirmed no immediate handoff error, consent
+dialog, draft edit, unexpected extra attachment, or loss of existing attachments
+occurred. Page Relay reports success (`prepared: true`) and displays **Added**
+immediately after handoff. It does not wait for the provider to finish uploading,
+processing, rendering previews, or enabling Send, and it does not monitor or
+report subsequent provider-side upload failures; the provider continues
+independently. Changes by the user or provider during handoff result in Needs
+review; no restoration or automatic retry overwrites user work. A provider that
+synchronously replaces existing attachment state instead of appending is detected
+and reported for review. This check cannot reconstruct files removed internally
+by a changed provider UI; the live append checks below are required for current
+account/UI variants.
 
-ChatGPT uses the current composer form and its upload control, including the
-`data-composer-markdown` editor variant. Claude uses its ChatComposer and file
-thumbnail tiles. Both receive PNG and optional TXT in one new upload batch.
+ChatGPT uses the current composer form and its general upload control, including
+the `data-composer-markdown` editor variant. Claude uses its ChatComposer upload
+control. Both receive PNG and optional TXT in one new upload batch.
 
-Gemini receives PNG and waits for its matching preview. It uploads TXT afterward
-only when selected; its TXT upload path is skipped entirely otherwise. It may
-rename/re-encode PNG to `<unique-stem>_<suffix>.jpg`; matching accepts that observed
-conversion and verifies a decoded image. Existing files are included in preservation
-checks. Consent is never accepted automatically. Gemini temporarily activates its
+Gemini resolves and validates its image upload control (and its TXT upload control
+when selected) before handing off PNG and optional TXT without waiting for PNG
+upload or preview completion; its TXT upload path is skipped entirely otherwise.
+If Gemini detaches the TXT input during PNG handoff, the routine re-acquires it
+via the upload menu before handing off TXT. Existing files are included in
+preservation checks, and filename matching still accounts for Gemini's observed
+`<unique-stem>_<suffix>.jpg` conversion during duplicate/existing-file checks.
+Consent is never accepted automatically. Gemini temporarily activates its
 destination tab, restoring the prior tab only if the user has not switched away;
 restoration is best effort with a two-second bound.
 
@@ -279,9 +289,9 @@ using a disposable conversation and nonsensitive sample content. Verify:
 - A unique editable composer and scoped attachment controls for the expected files.
 - The PNG is accepted alone, and PNG plus complete text are accepted when text is enabled; neither expected file is silently lost.
 - Existing text and attachments are detectable before modifying anything.
-- Upload completion/error indicators are distinguishable from merely selected files.
-- The composer text remains unchanged and all expected new attachments are ready while
-  pre-existing attachments remain present and nothing is submitted.
+- Existing upload progress and immediate error indicators are detectable before or during handoff.
+- The composer text and pre-existing attachments remain unchanged during handoff,
+  the provider continues uploading independently, and nothing is submitted.
 - Editor replacement, background tabs, new-chat URL transitions, failed uploads,
   and user edits during preparation cannot produce a duplicate or a hidden submit.
 

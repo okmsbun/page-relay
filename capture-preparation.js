@@ -105,13 +105,11 @@ async function prepareFilesInComposer(payload) {
     if (event.isTrusted && (event.target.closest?.(selectors[provider]) || event.target.matches?.('input[type="file"]'))) userEdited = true;
   };
   const events = ["beforeinput", "input", "paste", "drop", "compositionstart"];
-  const filesReady = () => {
+  const filesMatched = () => {
     const current = tiles();
     const matches = expectedNames.map((name) => current.filter((node) => filenameMatches(node, name)));
-    const image = matches[0][0]?.querySelector("img");
     return matches.every((nodes) => nodes.length === 1) &&
-      new Set(matches.map((nodes) => nodes[0])).size === expectedNames.length &&
-      !progress() && (provider !== "gemini" || (image?.complete && image.naturalWidth > 0));
+      new Set(matches.map((nodes) => nodes[0])).size === expectedNames.length;
   };
   function check() {
     if (Date.now() >= payload.deadline) throw new Error("Preparation timed out. Review this chat before adding again.");
@@ -131,15 +129,11 @@ async function prepareFilesInComposer(payload) {
     if (consent()) throw new Error("Open Gemini and review its upload consent dialog, then retry.");
     if (errorVisible()) throw new Error("The provider is showing an error. Review this chat and its upload status.");
   }
-  async function until(predicate, duration = 60000, stableFor = 0) {
+  async function until(predicate, duration = 10000) {
     const deadline = Math.min(payload.deadline, Date.now() + duration);
-    let since = null;
     while (Date.now() < deadline) {
       check();
-      if (predicate()) {
-        since ??= Date.now();
-        if (Date.now() - since >= stableFor) return true;
-      } else since = null;
+      if (predicate()) return true;
       await wait(250);
     }
     return false;
@@ -177,6 +171,8 @@ async function prepareFilesInComposer(payload) {
     changed = true;
     ledger.set(key, "review"); // Retained even if the tab/panel interrupts execution.
     input.files = data.files;
+    if (input.files.length !== files.length)
+      throw new Error("The upload control did not accept the selected files.");
     input.dispatchEvent(new Event("change", { bubbles: true }));
     check();
   }
@@ -185,6 +181,7 @@ async function prepareFilesInComposer(payload) {
     if (url() !== payload.expectedUrl) throw new Error("The conversation changed. Refresh and select it again.");
     if (globalThis.__pageCapturePreparing) return { prepared: false, needsReview: false, busy: true, error: "Another capture is being prepared in this tab. Wait, then retry." };
     if (ledger.get(key) === "review") return { prepared: false, needsReview: true, error: "This capture was already attempted. Review the existing files before adding again." };
+    if (ledger.get(key) === "prepared") return { prepared: true, duplicate: true };
     if (!editor() || !root()) throw new Error("The message composer is unavailable. Open this chat and sign in.");
     const stop = provider === "chatgpt" ? '[data-testid="stop-button"]' : provider === "claude" ? '[data-testid="stop-response"]' : 'gem-icon-button.send-button.stop, .stop-button';
     if ([...document.querySelectorAll(stop)].some(visible)) return { prepared: false, needsReview: false, busy: true, error: "Generating a response. Wait for it to finish, then click Add again." };
@@ -197,11 +194,10 @@ async function prepareFilesInComposer(payload) {
     for (const event of events) document.addEventListener(event, observeEdit, true);
     // DOM evidence also protects a repeated operation after the isolated world's
     // ledger was lost. Never re-upload partial or previously added files.
-    if (ledger.has(key) || tiles().some((node) => filenameMatches(node, payload.png) || filenameMatches(node, payload.txt))) {
+    const ownFiles = tiles().filter((node) => filenameMatches(node, payload.png) || filenameMatches(node, payload.txt));
+    if (ownFiles.length) {
       changed = true; // Uncertainty about a previous upload must remain Needs review.
-      const ownFiles = tiles().filter((node) => filenameMatches(node, payload.png) || filenameMatches(node, payload.txt));
-      if (!filesReady() || ownFiles.length !== expectedNames.length) throw new Error("This capture was already added or partially prepared. Review its files before adding again.");
-      if (!await until(filesReady, 2000, 1000)) throw new Error("Previously prepared attachments changed. Review this chat.");
+      if (!filesMatched() || ownFiles.length !== expectedNames.length) throw new Error("This capture was already added or partially prepared. Review its files before adding again.");
       ledger.set(key, "prepared");
       return { prepared: true, duplicate: true };
     }
@@ -211,12 +207,17 @@ async function prepareFilesInComposer(payload) {
     const txt = includeText ? new File([payload.text], payload.txt, { type: "text/plain" }) : null;
     if (provider === "gemini") {
       const imageInput = await geminiInput('uploader input[type="file"][accept="image/*"]');
-      upload(imageInput, [png]);
-      if (!await until(() => tiles().some((tile) => filenameMatches(tile, payload.png))))
-        throw new Error("Screenshot upload could not be confirmed. Review this chat.");
+      let textInput = null;
       if (includeText) {
-        const textInput = await geminiInput('images-files-uploader input[type="file"]');
+        textInput = await geminiInput('images-files-uploader input[type="file"]');
         if (!accepts(textInput, ".txt", "text/plain")) throw new Error("Gemini’s upload control does not accept TXT files.");
+      }
+      upload(imageInput, [png]);
+      if (includeText) {
+        if (!textInput.isConnected || textInput.disabled) {
+          textInput = await geminiInput('images-files-uploader input[type="file"]');
+          if (!accepts(textInput, ".txt", "text/plain")) throw new Error("Gemini’s upload control does not accept TXT files.");
+        }
         upload(textInput, [txt]);
       }
     } else {
@@ -232,8 +233,7 @@ async function prepareFilesInComposer(payload) {
       const input = validateInput(inputs.filter((node) => accepts(node, ".png", "image/png") && (!requireGeneralInput || accepts(node, ".txt", "text/plain"))));
       upload(input, includeText ? [png, txt] : [png]);
     }
-    const prepared = () => filesReady() && tiles().length === initial.length + expectedNames.length;
-    if (!await until(prepared, 60000, 1000)) throw new Error("The expected attachments did not become ready. Review this chat’s upload status.");
+    // Success means handoff succeeded; the provider uploads and processes independently.
     ledger.set(key, "prepared");
     return { prepared: true };
   } catch (error) {
