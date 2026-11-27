@@ -369,7 +369,7 @@ test("continually changing captures stop after bounded retries at the same posit
   assert.ok(state.restored);
 });
 
-test("transient layout shrink recovers automatically with an exact full-page screenshot", async () => {
+test("dynamic height shrink above covered rows succeeds in a single pass without aborting", async () => {
   let shrank = false;
   let starts = 0;
   const { run, state } = harness({
@@ -377,18 +377,87 @@ test("transient layout shrink recovers automatically with an exact full-page scr
     onMessage(state, message) {
       if (message.type === "fullPageCapture:start") starts++;
       if (!shrank && message.type === "fullPageCapture:scroll") {
+        // Simulates collapsing skeletons, virtualized list height refinement, or scroll-fixed header.
         state.height = 1800;
         shrank = true;
       }
     },
   });
   await run("captureFullPage({id: 1, windowId: 2})");
-  assert.equal(starts, 2, "restarted cleanly once after layout shrank");
+  assert.equal(starts, 1, "did not abort or restart needlessly");
   const canvas = state.canvases.at(-1);
   assert.equal(canvas.height, 1800);
   assert.equal(canvas.rows.length, 1800);
   for (let row = 0; row < 1800; row++) assert.equal(canvas.rows[row], row);
   assert.ok(state.restored && state.disconnected);
+});
+
+test("height shrinking down to already-covered bottom completes without false stuck-scroller error", async () => {
+  let shrank = false;
+  const { run, state } = harness({
+    height: 2000,
+    viewport: 800,
+    onMessage(state, message) {
+      if (!shrank && message.type === "fullPageCapture:scroll") {
+        state.height = 800;
+        state.y = 0;
+        shrank = true;
+      }
+    },
+  });
+  await run("captureFullPage({id: 1, windowId: 2})");
+  const canvas = state.canvases.at(-1);
+  assert.equal(canvas.height, 800);
+  assert.equal(canvas.rows.length, 800);
+  for (let row = 0; row < 800; row++) assert.equal(canvas.rows[row], row);
+  assert.ok(state.restored && state.disconnected);
+});
+
+test("height collapsing below already-covered rows recovers cleanly on retry", async () => {
+  let collapsed = false;
+  let starts = 0;
+  let scrolls = 0;
+  const { run, state } = harness({
+    height: 2400,
+    viewport: 800,
+    onMessage(state, message) {
+      if (message.type === "fullPageCapture:start") starts++;
+      if (!collapsed && message.type === "fullPageCapture:scroll") {
+        scrolls++;
+        if (scrolls === 2) {
+          state.height = 1200;
+          state.y = 400;
+          collapsed = true;
+        }
+      }
+    },
+  });
+  await run("captureFullPage({id: 1, windowId: 2})");
+  assert.equal(starts, 2, "restarted cleanly after height collapsed below covered pixels");
+  const canvas = state.canvases.at(-1);
+  assert.equal(canvas.height, 1200);
+  assert.equal(canvas.rows.length, 1200);
+  for (let row = 0; row < 1200; row++) assert.equal(canvas.rows[row], row);
+  assert.ok(state.restored && state.disconnected);
+});
+
+test("subpixel crop jitter (<= 0.5px) does not trigger false layout retries", async () => {
+  let starts = 0;
+  const crop = { x: 0, y: 0, width: 80, height: 800 };
+  const { run, state } = harness({
+    height: 1600,
+    crop,
+    onMessage(_state, message) {
+      if (message.type === "fullPageCapture:start") starts++;
+      if (message.type === "fullPageCapture:scroll") {
+        crop.x = 0.25;
+        crop.y = 0.4;
+      }
+    },
+  });
+  await run("captureFullPage({id: 1, windowId: 2})");
+  assert.equal(starts, 1, "subpixel jitter tolerated without retrying");
+  assert.equal(state.canvases.at(-1).rows.length, 1600);
 });
 
 test("transient viewport/crop shift recovers automatically without corrupted seams", async () => {
@@ -414,23 +483,33 @@ test("transient viewport/crop shift recovers automatically without corrupted sea
   assert.ok(state.restored && state.disconnected);
 });
 
-test("persistent layout instability stops after bounded retries and restores the page", async () => {
+test("persistent layout instability stops after bounded retries and attaches structured diagnostics", async () => {
   let starts = 0;
+  const crop = { x: 0, y: 0, width: 70, height: 800 };
   const { run, state } = harness({
     height: 2400,
-    onMessage(state, message) {
+    crop,
+    onMessage(_state, message) {
       if (message.type === "fullPageCapture:start") {
         starts++;
-        state.height = 2400;
+        crop.x = 0;
       }
       if (message.type === "fullPageCapture:scroll") {
-        state.height -= 300;
+        crop.x = 15;
       }
     },
   });
   await assert.rejects(
     run("captureFullPage({id: 1, windowId: 2})"),
-    /layout changed/,
+    (error) => {
+      assert.match(error.message, /layout changed/);
+      assert.equal(error.diagnostic?.reason, "geometry-changed");
+      assert.equal(error.diagnostic?.attempt, 3);
+      assert.ok(
+        error.diagnostic?.diffs?.some((diff) => diff.includes("crop.x: 0 -> 15")),
+      );
+      return true;
+    },
   );
   assert.equal(starts, 3, "1 initial pass + 2 bounded recovery passes");
   assert.ok(state.restored && state.disconnected);
@@ -534,7 +613,11 @@ test("geometry comparison allows lazy height growth but rejects crop/viewport mo
   assert.equal(compare("sameViewport", { ...geometry, scrollY: 400 }), false);
 });
 
-function pageHarness({ imageReadyAt = 900, fontsReadyAt = 1200 } = {}) {
+function pageHarness({
+  imageReadyAt = 900,
+  fontsReadyAt = 1200,
+  continuousMutations = false,
+} = {}) {
   const state = { time: 0, scrollX: 12, scrollY: 177 };
   function element() {
     const properties = new Map();
@@ -556,6 +639,7 @@ function pageHarness({ imageReadyAt = 900, fontsReadyAt = 1200 } = {}) {
   const body = element();
   let handler;
   let connection;
+  let observerCallback;
   const window = {
     ...state,
     innerWidth: 100,
@@ -578,10 +662,14 @@ function pageHarness({ imageReadyAt = 900, fontsReadyAt = 1200 } = {}) {
     performance: { now: () => state.time },
     setTimeout: (callback, ms) => {
       state.time += ms;
+      if (continuousMutations) observerCallback?.();
       queueMicrotask(callback);
     },
     getComputedStyle: () => ({ position: "static" }),
     MutationObserver: class {
+      constructor(cb) {
+        observerCallback = cb;
+      }
       observe() {}
       disconnect() {}
     },
@@ -677,4 +765,18 @@ test("closing the panel during a wait cancels work and restores styles", async (
   await assert.rejects(pending, /cancelled/);
   assert.equal(window.scrollY, 177);
   assert.equal(root.style.getPropertyValue("scroll-snap-type"), "");
+});
+
+test("continuous non-layout DOM mutations settle cleanly once layout and resources stabilize", async () => {
+  const { send, state } = pageHarness({
+    imageReadyAt: 200,
+    fontsReadyAt: 200,
+    continuousMutations: true,
+  });
+  await send("start");
+  assert.ok(
+    state.time >= 1000 && state.time < 2000,
+    `expected bounded layout-stable settle, got ${state.time}ms`,
+  );
+  await send("restore");
 });

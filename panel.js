@@ -37,6 +37,30 @@ function loadImage(dataUrl) {
   });
 }
 
+const GEOMETRY_EPSILON = 0.5;
+
+function closeEnough(a, b) {
+  return (
+    Number.isFinite(a) &&
+    Number.isFinite(b) &&
+    Math.abs(a - b) <= GEOMETRY_EPSILON
+  );
+}
+
+function sameCrop(a, b) {
+  if (!a || !b) return a === b;
+  return ["x", "y", "width", "height"].every((key) =>
+    closeEnough(a[key], b[key]),
+  );
+}
+
+function sameRegions(a = [], b = []) {
+  return (
+    a.length === b.length &&
+    a.every((region, index) => sameCrop(region.crop, b[index]?.crop))
+  );
+}
+
 function sameGeometry(a, b) {
   return (
     a.viewportHeight === b.viewportHeight &&
@@ -44,9 +68,8 @@ function sameGeometry(a, b) {
     a.windowHeight === b.windowHeight &&
     a.windowWidth === b.windowWidth &&
     a.devicePixelRatio === b.devicePixelRatio &&
-    ["x", "y", "width", "height"].every((key) => a.crop[key] === b.crop[key]) &&
-    JSON.stringify((a.regions || []).map((r) => r.crop)) ===
-      JSON.stringify((b.regions || []).map((r) => r.crop))
+    sameCrop(a.crop, b.crop) &&
+    sameRegions(a.regions, b.regions)
   );
 }
 
@@ -54,17 +77,56 @@ function sameViewport(a, b) {
   return (
     sameGeometry(a, b) &&
     a.documentHeight === b.documentHeight &&
-    a.scrollX === b.scrollX &&
-    a.scrollY === b.scrollY
+    closeEnough(a.scrollX, b.scrollX) &&
+    closeEnough(a.scrollY, b.scrollY)
   );
+}
+
+function describeGeometryDiff(initial, current) {
+  const diffs = [];
+  for (const key of [
+    "windowWidth",
+    "windowHeight",
+    "viewportWidth",
+    "viewportHeight",
+    "devicePixelRatio",
+  ]) {
+    if (initial[key] !== current[key]) {
+      diffs.push(`${key}: ${initial[key]} -> ${current[key]}`);
+    }
+  }
+  for (const key of ["x", "y", "width", "height"]) {
+    if (!closeEnough(initial.crop?.[key], current.crop?.[key])) {
+      diffs.push(
+        `crop.${key}: ${initial.crop?.[key]} -> ${current.crop?.[key]}`,
+      );
+    }
+  }
+  const aRegions = initial.regions || [];
+  const bRegions = current.regions || [];
+  if (aRegions.length !== bRegions.length) {
+    diffs.push(`regions.length: ${aRegions.length} -> ${bRegions.length}`);
+  } else {
+    for (let i = 0; i < aRegions.length; i++) {
+      for (const key of ["x", "y", "width", "height"]) {
+        if (!closeEnough(aRegions[i].crop?.[key], bRegions[i].crop?.[key])) {
+          diffs.push(
+            `regions[${i}].crop.${key}: ${aRegions[i].crop?.[key]} -> ${bRegions[i].crop?.[key]}`,
+          );
+        }
+      }
+    }
+  }
+  return diffs;
 }
 
 function layoutChangedError(
   message = "The page layout changed during capture. Wait for it to settle and retry.",
+  diagnostic = null,
 ) {
   const error = new Error(message);
   error.layoutChanged = true;
-  error.expected = true;
+  if (diagnostic) error.diagnostic = diagnostic;
   return error;
 }
 
@@ -123,11 +185,18 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
         minimumWait: BOTTOM_WAIT_MS,
       });
     }
-    if (
-      !sameGeometry(initial, before) ||
-      before.documentHeight < previousHeight
-    ) {
-      throw layoutChangedError();
+    if (!sameGeometry(initial, before)) {
+      const diffs = describeGeometryDiff(initial, before);
+      throw layoutChangedError(
+        "The page layout changed during capture. Wait for it to settle and retry.",
+        {
+          reason: "geometry-changed",
+          segment: index + 1,
+          region: initial.regionIndex || 0,
+          scrollY: before.scrollY,
+          diffs,
+        },
+      );
     }
 
     const [activeTab] = await chrome.tabs.query({
@@ -155,9 +224,26 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     if (!sameViewport(before, after)) {
       // Retry this position only; never start another full-page traversal.
       if (++unstableCaptures >= 3) {
-        throw new Error(
+        const diffs = describeGeometryDiff(before, after);
+        if (before.documentHeight !== after.documentHeight) {
+          diffs.push(
+            `documentHeight: ${before.documentHeight} -> ${after.documentHeight}`,
+          );
+        }
+        if (!closeEnough(before.scrollY, after.scrollY)) {
+          diffs.push(`scrollY: ${before.scrollY} -> ${after.scrollY}`);
+        }
+        const error = new Error(
           "The page keeps changing during capture. Please wait and retry.",
         );
+        error.diagnostic = {
+          reason: "unstable-segment",
+          segment: index + 1,
+          region: initial.regionIndex || 0,
+          scrollY: before.scrollY,
+          diffs,
+        };
+        throw error;
       }
       requestedY = before.scrollY;
       requestedEnd = false;
@@ -198,6 +284,14 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     ) {
       throw layoutChangedError(
         "The viewport size changed during capture. Please retry.",
+        {
+          reason: "viewport-bitmap-changed",
+          segment: index + 1,
+          region: initial.regionIndex || 0,
+          diffs: [
+            `cropBitmap: ${canvas.width}x${capturedCropHeight} -> ${cropWidth}x${cropHeight}`,
+          ],
+        },
       );
     }
 
@@ -205,35 +299,67 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     // Only an explicit request past the end proves that Chrome clamped the
     // scroller. The one-CSS-pixel bound accounts for scrollHeight/clientHeight
     // rounding; an early stuck scroller is never treated as a completed page.
-    const atEnd = requestedEnd && requestedY > before.scrollY + 1 &&
-      Math.abs(before.scrollY + before.viewportHeight - before.documentHeight) <= 1;
+    const atBottom =
+      requestedY > before.scrollY + 1 &&
+      Math.abs(
+        before.scrollY + before.viewportHeight - before.documentHeight,
+      ) <= 1;
+    const atEnd = requestedEnd && atBottom;
     const height = atEnd ? segmentTop + cropHeight :
       Math.round(before.documentHeight * scaleY);
-    if (height < coveredPixels) throw layoutChangedError();
+    if (height < coveredPixels) {
+      throw layoutChangedError(
+        "The page layout changed during capture. Wait for it to settle and retry.",
+        {
+          reason: "height-collapsed",
+          segment: index + 1,
+          region: initial.regionIndex || 0,
+          scrollY: before.scrollY,
+          diffs: [
+            `canvasHeight: ${height} < coveredPixels: ${coveredPixels} (documentHeight ${previousHeight} -> ${before.documentHeight})`,
+          ],
+        },
+      );
+    }
     if (height !== canvas.height) {
       checkCanvasSize(canvas.width, height);
-      // Preserve all covered rows on lazy growth or the final raster-boundary
-      // correction. Never stretch the last screenshot or invent missing rows.
-      const expanded = document.createElement("canvas");
-      expanded.width = canvas.width;
-      expanded.height = height;
-      const expandedContext = expanded.getContext("2d");
-      if (!expandedContext)
-        throw new Error("Could not expand the screenshot canvas.");
-      expandedContext.drawImage(canvas, 0, 0);
+      // Preserve all covered rows on lazy growth, dynamic shrink above covered
+      // rows, or the final raster-boundary correction. Never stretch or invent rows.
+      const resized = document.createElement("canvas");
+      resized.width = canvas.width;
+      resized.height = height;
+      const resizedContext = resized.getContext("2d");
+      if (!resizedContext)
+        throw new Error("Could not resize the screenshot canvas.");
+      resizedContext.drawImage(canvas, 0, 0);
       canvas.width = canvas.height = 0;
-      canvas = expanded;
-      context = expandedContext;
+      canvas = resized;
+      context = resizedContext;
     }
     previousHeight = before.documentHeight;
 
     // Shared integer boundaries keep fractional DPR/zoom and the last crop aligned.
     const segmentBottom = Math.min(canvas.height, segmentTop + cropHeight);
-    if (segmentTop > coveredPixels ||
-        (segmentBottom <= coveredPixels && !atEnd)) {
-      throw new Error(
+    const doneAtShrunkBottom = atBottom && coveredPixels === canvas.height;
+    if (
+      segmentTop > coveredPixels ||
+      (segmentBottom <= coveredPixels && !atEnd && !doneAtShrunkBottom)
+    ) {
+      const error = new Error(
         "The page could not be scrolled any farther without missing screenshot sections.",
       );
+      error.diagnostic = {
+        reason: "scroll-gap-or-stuck",
+        segment: index + 1,
+        region: initial.regionIndex || 0,
+        scrollY: before.scrollY,
+        requestedY,
+        segmentTop,
+        segmentBottom,
+        coveredPixels,
+        documentHeight: before.documentHeight,
+      };
+      throw error;
     }
     const sourceY = coveredPixels - segmentTop;
     const rows = segmentBottom - coveredPixels;
@@ -248,9 +374,9 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       canvas.width,
       rows,
     );
-    coveredPixels = segmentBottom;
+    coveredPixels = Math.max(coveredPixels, segmentBottom);
 
-    if (atEnd && coveredPixels === canvas.height) {
+    if ((atEnd || doneAtShrunkBottom) && coveredPixels === canvas.height) {
       return canvas;
     }
     // Leave overlap for scroll-position quantization. Once the final viewport
@@ -297,10 +423,15 @@ async function captureFullPage(tab) {
           if (
             metrics.windowWidth !== initial.windowWidth ||
             metrics.windowHeight !== initial.windowHeight ||
-            JSON.stringify(metrics.regions) !== JSON.stringify(initial.regions)
+            !sameRegions(metrics.regions, initial.regions)
           ) {
             throw layoutChangedError(
               "The application layout changed during capture. Please retry.",
+              {
+                reason: "application-regions-changed",
+                region: index,
+                diffs: describeGeometryDiff(initial, metrics),
+              },
             );
           }
           const canvas = await capturePass(tab, metrics, session);
@@ -332,7 +463,16 @@ async function captureFullPage(tab) {
             resultCanvas.width = resultCanvas.height = 0;
         }
       } catch (error) {
-        if (!error?.layoutChanged || attempt >= MAX_LAYOUT_RETRIES) throw error;
+        if (!error?.layoutChanged || attempt >= MAX_LAYOUT_RETRIES) {
+          if (error?.diagnostic) {
+            error.diagnostic = { ...error.diagnostic, attempt: attempt + 1 };
+          }
+          throw error;
+        }
+        console.warn?.(
+          "[Page Relay] Recovering from layout shift during capture:",
+          error.diagnostic || error.message,
+        );
         for (const panel of panels) {
           panel.canvas.width = panel.canvas.height = 0;
         }
@@ -439,7 +579,7 @@ function isExpectedCaptureError(error) {
   if (error?.expected || isProtectedError(error) || isPermissionError(error))
     return true;
   const message = String(error?.message ?? error ?? "");
-  return /active tab changed|keep the captured tab active|layout changed|viewport size changed|keeps changing|still loading|too large|too long|could not be identified|no longer open|scrolling area|cancelled/i.test(
+  return /active tab changed|keep the captured tab active|could not be identified|no longer open|cancelled/i.test(
     message,
   );
 }
@@ -449,7 +589,9 @@ function friendlyError(error) {
   if (isProtectedError(error)) return PROTECTED_PAGE_MESSAGE;
   if (isPermissionError(error))
     return "Chrome blocked access to this page’s content, so nothing was captured.";
-  return message || "Something interrupted the capture. Please try again.";
+  const base = message || "Something interrupted the capture. Please try again.";
+  const summary = error?.diagnostic?.diffs?.slice(0, 2).join(", ");
+  return summary ? `${base} (${summary})` : base;
 }
 
 preview.addEventListener("load", () => {
@@ -613,7 +755,13 @@ async function runPanelCapture(sourceTab) {
     setStatus("success", "", "");
     await destinationUI.show(result);
   } catch (error) {
-    if (!isExpectedCaptureError(error)) console.error(error);
+    if (!isExpectedCaptureError(error)) {
+      if (error?.diagnostic) {
+        console.error("[Page Relay] Capture failed:", error.message, error.diagnostic);
+      } else {
+        console.error("[Page Relay] Capture failed:", error);
+      }
+    }
     if (!capturedPage) {
       document.querySelector("#emptyState h2").textContent =
         "Preview unavailable";

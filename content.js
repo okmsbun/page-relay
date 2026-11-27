@@ -22,8 +22,8 @@
 
   function clientRect(element) {
     const rect = element.getBoundingClientRect();
-    const scaleX = rect.width / element.offsetWidth;
-    const scaleY = rect.height / element.offsetHeight;
+    const scaleX = element.offsetWidth ? rect.width / element.offsetWidth : 1;
+    const scaleY = element.offsetHeight ? rect.height / element.offsetHeight : 1;
     return {
       x: rect.left + element.clientLeft * scaleX,
       y: rect.top + element.clientTop * scaleY,
@@ -282,10 +282,28 @@
     });
   }
 
+  function layoutSignature(metrics) {
+    const q = (value) => Math.round((Number(value) || 0) * 2) / 2;
+    const crop = (box) => [q(box.x), q(box.y), q(box.width), q(box.height)];
+    return JSON.stringify([
+      metrics.documentHeight,
+      metrics.viewportHeight,
+      metrics.viewportWidth,
+      metrics.windowHeight,
+      metrics.windowWidth,
+      metrics.devicePixelRatio,
+      q(metrics.scrollX),
+      q(metrics.scrollY),
+      crop(metrics.crop),
+      (metrics.regions || []).map((region) => crop(region.crop)),
+    ]);
+  }
+
   async function settle(minimumWait = QUIET_MS) {
     const state = captureState;
     requireState(state);
     const started = performance.now();
+    const mutationGraceMs = Math.max(minimumWait, 1000);
     let stableSince = started;
     let previous = "";
 
@@ -294,20 +312,24 @@
       requireState(state);
       normalizeOverlays();
       const metrics = getMetrics();
-      const signature = JSON.stringify(metrics);
+      const signature = layoutSignature(metrics);
       const now = performance.now();
-      if (
-        signature !== previous ||
-        visibleImagesPending() ||
-        document.fonts?.status === "loading"
-      ) {
+      const resourcesPending =
+        visibleImagesPending() || document.fonts?.status === "loading";
+      if (signature !== previous || resourcesPending) {
         stableSince = now;
         previous = signature;
       }
+      // Proceed once quiet; if background timers/animations keep mutating the DOM
+      // without affecting layout or resources, accept a 1s layout-stable window.
+      const quietEnough =
+        now - state.lastMutation >= QUIET_MS ||
+        (now - started >= mutationGraceMs && now - stableSince >= 1000);
       if (
+        !resourcesPending &&
         now - started >= minimumWait &&
         now - stableSince >= QUIET_MS &&
-        now - state.lastMutation >= QUIET_MS
+        quietEnough
       ) {
         state.text.sample();
         return metrics;

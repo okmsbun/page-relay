@@ -75,7 +75,7 @@
         win.showProgress(0, 1, 0.5, 2);
         win.showTextStats({ characters: 400, estimatedTokens: 100 });
         await wait(150);
-        if (fail === "layout") throw Object.assign(new Error("The page layout changed during capture. Wait for it to settle and retry."), { layoutChanged: true, expected: true });
+        if (fail === "layout") throw Object.assign(new Error("The page layout changed during capture. Wait for it to settle and retry."), { layoutChanged: true, diagnostic: { reason: "geometry-changed", diffs: ["viewportHeight: 800 -> 720"] } });
         if (fail === "permission") throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
         if (fail) throw new Error("Cannot access a chrome:// URL");
         return current > 1
@@ -342,12 +342,14 @@
       assert(doc.body.dataset.state === "success" && doc.getElementById("emptyState").hidden, "restarted session shows the new capture"); if (location.search.includes("preview")) {
         document.getElementById("result").textContent = "PASS " + JSON.stringify(checks); return;
       }
-      // Retryable initial capture failure keeps Recapture accessible and succeeds on retry.
+      // Retryable initial capture failure keeps Recapture accessible, reports diagnostics, and succeeds on retry.
       sourcePin = null; fail = "layout"; sourceId = 1;
       frame.remove();
       ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(doc.body.dataset.state === "error" && !doc.getElementById("recapturePage").hidden && !doc.getElementById("recapturePage").disabled, "retryable initial capture error keeps Recapture enabled");
-      assert(doc.getElementById("statusDetail").textContent.includes("Click Recapture"), "retryable error directs user to Recapture");
+      assert(doc.getElementById("statusDetail").textContent.includes("viewportHeight: 800 -> 720") && doc.getElementById("statusDetail").textContent.includes("Click Recapture"), "retryable capture error surfaces diagnostic cause and directs user to Recapture");
+      assert(consoleErrors.length === 1 && consoleErrors[0][2]?.reason === "geometry-changed", "genuine unrecovered capture failures remain observable with structured diagnostics");
+      consoleErrors.length = 0;
       fail = false;
       doc.getElementById("recapturePage").click(); await wait(220);
       assert(doc.body.dataset.state === "success" && !doc.getElementById("destinations").hidden, "clicking Recapture after failed initial capture succeeds");
@@ -366,7 +368,7 @@
       assert(doc.getElementById("recapturePage").hidden, "permission error hides Recapture until toolbar click re-grants activeTab");
       assert(!/protect|regular webpage/i.test(doc.getElementById("statusDetail").textContent), "normal pages are never reported as protected");
       assert(doc.getElementById("statusDetail").textContent.includes("blocked access"), "access failure explains the missing grant");
-      assert(consoleErrors.length === 0, "expected operational capture errors never pollute console.error");
+      assert(consoleErrors.length === 0, "expected browser-boundary errors do not pollute console.error");
       document.getElementById("result").textContent = "PASS " + JSON.stringify(checks);
     } catch (error) {
       document.getElementById("result").textContent = "FAIL " + error.message + " " + JSON.stringify(checks);
