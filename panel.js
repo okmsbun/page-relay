@@ -421,10 +421,51 @@ document.getElementById("zoomPreview").addEventListener("click", (event) => {
   event.currentTarget.textContent = actual ? "Fit" : "100%";
 });
 
+const recaptureButton = document.getElementById("recapturePage");
+
 let captureStarted = false;
-async function startPanelCapture(sourceTab) {
-  if (captureStarted) return;
-  captureStarted = true;
+let capturing = false;
+let captureSourceTab = null;
+
+function isDestinationBusy() {
+  return typeof destinationUI !== "undefined" && destinationUI.isBusy?.() === true;
+}
+
+function updateRecaptureButton() {
+  if (!recaptureButton) return;
+  recaptureButton.disabled =
+    capturing || !captureSourceTab || isDestinationBusy();
+  if (capturing) recaptureButton.dataset.capturing = "true";
+  else delete recaptureButton.dataset.capturing;
+}
+
+if (typeof destinationUI !== "undefined")
+  destinationUI.onBusyChange?.(updateRecaptureButton);
+
+async function resolveRecaptureTab() {
+  if (!captureSourceTab?.id)
+    throw new Error("The tab to capture could not be identified.");
+  if (chrome?.tabs?.get) {
+    const latest = await chrome.tabs
+      .get(captureSourceTab.id)
+      .catch(() => null);
+    if (!latest?.id)
+      throw new Error("The captured source tab is no longer open.");
+    if (latest.active === false)
+      throw new Error("Switch back to the source tab, then click Recapture.");
+    return Object.freeze({
+      id: latest.id,
+      windowId: latest.windowId,
+      url: latest.url ?? "",
+    });
+  }
+  return captureSourceTab;
+}
+
+async function runPanelCapture(sourceTab) {
+  if (capturing || isDestinationBusy()) return;
+  capturing = true;
+  updateRecaptureButton();
   document.getElementById("includePageText").checked = false;
   destinationUI.suspend();
   progressValue = 0;
@@ -445,6 +486,11 @@ async function startPanelCapture(sourceTab) {
     const tab = await sourceTab;
     if (!tab?.id)
       throw new Error("The tab to capture could not be identified.");
+    captureSourceTab = Object.freeze({
+      id: tab.id,
+      windowId: tab.windowId,
+      url: tab.url ?? "",
+    });
     const result = await captureFullPage(tab);
     capturedPage = result;
     preview.src = result.screenshot;
@@ -466,13 +512,14 @@ async function startPanelCapture(sourceTab) {
     await destinationUI.show(result);
   } catch (error) {
     console.error(error);
-    document.querySelector("#emptyState h2").textContent =
-      "Preview unavailable";
-    setStatus(
-      "error",
-      "Couldn’t capture this page",
-      `${friendlyError(error)} Close the Side Panel, then reopen it using the extension toolbar icon to retry.`,
-    );
+    if (!capturedPage) {
+      document.querySelector("#emptyState h2").textContent =
+        "Preview unavailable";
+    }
+    const recovery = capturedPage
+      ? "Switch back to the source tab and click Recapture, or reopen the Side Panel from the toolbar icon."
+      : "Close the Side Panel, then reopen it using the extension toolbar icon to retry.";
+    setStatus("error", "Couldn’t capture this page", `${friendlyError(error)} ${recovery}`);
     document.getElementById("pageText").hidden = !capturedPage;
     if (capturedPage) {
       showTextStats(capturedPage);
@@ -481,6 +528,18 @@ async function startPanelCapture(sourceTab) {
       destinationUI.resume();
     }
   } finally {
+    capturing = false;
     document.getElementById("captureProgress").hidden = true;
+    updateRecaptureButton();
   }
 }
+
+async function startPanelCapture(sourceTab) {
+  if (captureStarted) return;
+  captureStarted = true;
+  return runPanelCapture(sourceTab);
+}
+
+recaptureButton?.addEventListener("click", () => {
+  void runPanelCapture(resolveRecaptureTab());
+});

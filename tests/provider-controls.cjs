@@ -72,6 +72,9 @@ const limit = setTimeout(() => { console.error("FAIL native controls timed out")
     }
   }
   await click("#provider-chatgpt");
+  assert.equal(await evaluate("panelFixture.doc.getElementById('destination-10').checked"), true);
+  await click(".destination-row", 0.97, 0.5);
+  assert.equal(await evaluate("panelFixture.doc.getElementById('destination-10').checked"), false);
   await click(".destination-row", 0.97, 0.5);
   assert.equal(await evaluate("panelFixture.doc.getElementById('destination-10').checked"), true);
   await click("#provider-gemini");

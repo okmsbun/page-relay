@@ -22,7 +22,7 @@
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const html = await (await fetch("../sidepanel.html")).text();
     const base = new URL("../", location.href).href;
-    let sourceId = 1, captureCalls = [], queries = 0, fail = false, discoveryFails = false, sourcePin = null;
+    let sourceId = 1, captureCalls = [], captureSerial = 0, queries = 0, fail = false, discoveryFails = false, sourcePin = null, sourceActive = true;
     const chats = [
       { id: 10, windowId: 2, index: 1, title: "Extension debugging", url: "https://chatgpt.com/c/one", status: "complete", incognito: false },
       { id: 11, windowId: 3, index: 0, title: "Other discussion", url: "https://chatgpt.com/c/two", status: "complete", incognito: false },
@@ -37,9 +37,11 @@
     ctx.fillStyle = "white"; ctx.font = "32px system-ui"; ctx.fillText("Sample page", 30, 90);
     for (let y = 200; y < 2500; y += 150) { ctx.fillStyle = "white"; ctx.fillRect(30, y, 900, 110); }
     const png = image.toDataURL();
+    ctx.fillStyle = "#1d4ed8"; ctx.fillRect(0, 0, 960, 150);
+    const pngUpdated = image.toDataURL();
     // Fixtures install mocks before the real sidepanel-session.js runs.
     window.configurePanelFixture = (win) => {
-      const sourceTab = (id) => ({ id, windowId: 2, url: "https://github.com/org/repo" });
+      const sourceTab = (id) => ({ id, windowId: 2, url: "https://github.com/org/repo", active: sourceActive });
       win.chrome = {
         tabs: {
           query: async (options) => { if (options.url) { if (discoveryFails) throw new Error("Test discovery error"); return chats; } queries++; assert(options.windowId === 2, "capture source queried in the panel's own window"); return [sourceTab(sourceId)]; },
@@ -51,12 +53,15 @@
       };
       win.captureFullPage = async (tab) => {
         captureCalls.push(tab.id);
+        const current = ++captureSerial;
         win.showProgress(0, 1, 0.5, 2);
         win.showTextStats({ characters: 400, estimatedTokens: 100 });
         await wait(150);
         if (fail === "permission") throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
         if (fail) throw new Error("Cannot access a chrome:// URL");
-        return { screenshot: png, text: "Hello <script>plain text<\/script>\nRevenue\nRevenue", characters: 49, estimatedTokens: 13 };
+        return current > 1
+          ? { screenshot: pngUpdated, text: "Updated capture text #" + current + "\nRevenue", characters: 31, estimatedTokens: 9 }
+          : { screenshot: png, text: "Hello <script>plain text<\/script>\nRevenue\nRevenue", characters: 49, estimatedTokens: 13 };
       };
     };
     async function openPanel() {
@@ -71,7 +76,8 @@
     }
     try {
       let { frame, win, doc } = await openPanel();
-      assert(!doc.getElementById("takeScreenshot"), "no initial or recapture button");
+      assert(!doc.getElementById("takeScreenshot"), "no initial capture button");
+      assert(doc.getElementById("previewToolbar").hidden, "recapture toolbar hidden during initial capture");
       assert(doc.body.dataset.state === "capturing", "capture starts automatically on open");
       assert(doc.getElementById("destinations").hidden, "adding unavailable while capturing");
       assert(!doc.getElementById("captureProgress").hidden, "progress visible");
@@ -121,13 +127,20 @@
         }
       }
       chooseProvider("chatgpt");
+      assert(doc.getElementById("recapturePage") && !doc.getElementById("recapturePage").disabled, "recapture button is ready after capture");
+      assert(doc.getElementById("destination-10").checked && !doc.getElementById("destination-11").checked, "first eligible conversation is selected by default");
+      assert(!doc.getElementById("sendCapture").disabled && doc.getElementById("sendCapture").textContent === "Add to 1 chat", "Add to 1 chat is enabled immediately after capture");
       const row = doc.getElementById("destination-10").closest(".destination-row");
       clickPoint(row, 0.97, 0.5);
+      assert(!doc.getElementById("destination-10").checked && doc.getElementById("sendCapture").disabled, "user can deselect the default conversation");
+      doc.getElementById("refreshDestinations").click(); await wait(30);
+      assert(!doc.getElementById("destination-10").checked && doc.getElementById("sendCapture").disabled, "refresh respects manual deselection instead of overriding it");
+      const refreshedRow = doc.getElementById("destination-10").closest(".destination-row");
+      clickPoint(refreshedRow, 0.97, 0.5);
       assert(doc.getElementById("destination-10").checked, "destination row empty space selects its checkbox");
-      clickPoint(row.querySelector(".destination-detail"), 0.5, 0.5);
+      clickPoint(refreshedRow.querySelector(".destination-detail"), 0.5, 0.5);
       assert(!doc.getElementById("destination-10").checked, "destination detail toggles selection once");
       assert(doc.querySelectorAll(".destination-row input").length === 3, "only active provider conversations shown");
-      assert([...doc.querySelectorAll(".destination-row input")].every((input) => !input.checked), "no automatic selection");
       assert(doc.getElementById("destinationList").textContent.includes("Incognito") && doc.getElementById("destinationList").textContent.includes("Other window"), "window and incognito labels retained");
       doc.getElementById("destination-10").click();
       chooseProvider("claude");
@@ -244,8 +257,10 @@
       doc.getElementById("sendCapture").click();
       await wait(5);
       assert(doc.querySelector(".destination-feedback.preparing"), "pending preparation shows Adding");
+      assert(doc.getElementById("recapturePage").disabled, "recapture is disabled while adding to chats");
       await wait(60);
       assert(!doc.querySelector(".destination-feedback.preparing") && doc.querySelector(".destination-feedback.review"), "stalled provider exits Adding with Needs review");
+      assert(!doc.getElementById("recapturePage").disabled, "recapture re-enables once adding finishes");
       assert(doc.getElementById("destination-15").disabled && !doc.getElementById("refreshDestinations").disabled && !doc.getElementById("sendCapture").textContent.includes("Adding"), "timeout releases panel busy state while preventing duplicate preparation");
       lateResult({ prepared: true }); await wait(20);
       assert(doc.querySelector(".destination-feedback.review"), "late completion cannot overwrite the review result");
@@ -253,26 +268,53 @@
       assert(doc.getElementById("destination-15").disabled, "refresh preserves duplicate protection after timeout");
       win.setTimeout = nativePanelTimeout;
       chats.pop();
+      // Recapture from a background source tab fails safely without losing the current capture.
+      sourceActive = false;
+      doc.getElementById("recapturePage").click(); await wait(40);
+      assert(doc.body.dataset.state === "error" && doc.getElementById("statusDetail").textContent.includes("Switch back to the source tab"), "recapture requires the source tab to be active");
+      assert(!doc.getElementById("destinations").hidden && doc.getElementById("preview").src === pinnedImage, "failed recapture keeps existing capture and destinations");
+      sourceActive = true;
+      // Recapture skips an unavailable first conversation, replaces content, and resets statuses/duplicate protection.
+      chooseProvider("chatgpt");
+      chats[0] = { ...chats[0], discarded: true };
+      const recaptureDeliveries = [];
+      win.eval("destinationUI").configurePreparation(async (destination, capture) => {
+        recaptureDeliveries.push([destination.id, capture.text]);
+        return { prepared: true };
+      });
+      doc.getElementById("includePageText").checked = true;
+      doc.getElementById("recapturePage").click();
+      assert(doc.body.dataset.state === "capturing" && doc.getElementById("recapturePage").disabled && doc.getElementById("destinations").hidden, "recapture shows capturing state and prevents conflicting actions");
+      await wait(220);
+      assert(captureCalls.join(",") === "1,1", "recapture captures the pinned source tab again");
+      assert(doc.body.dataset.state === "success" && !doc.getElementById("recapturePage").disabled, "recapture completes cleanly");
+      assert(doc.getElementById("preview").src === pngUpdated && doc.getElementById("textPreview").textContent.includes("Updated capture text"), "recapture replaces screenshot and extracted text");
+      assert(!doc.getElementById("includePageText").checked, "recapture resets Include page text toggle");
+      assert(!doc.querySelector(".destination-feedback.prepared") && !doc.querySelector(".destination-feedback.review"), "recapture resets delivery statuses");
+      assert(doc.getElementById("destination-10").disabled && !doc.getElementById("destination-10").checked && doc.getElementById("destination-11").checked && doc.getElementById("sendCapture").textContent === "Add to 1 chat", "default selection skips unavailable conversations and enables Add to 1 chat");
+      doc.getElementById("sendCapture").click(); await wait(60);
+      assert(recaptureDeliveries.length === 1 && recaptureDeliveries[0][0] === 11 && recaptureDeliveries[0][1].includes("Updated capture text"), "recaptured content can be delivered without old duplicate blocks");
+      chats[0] = { ...originalChats[0] };
       frame.remove();
       // A toolbar click pins the source before the panel opens; the pin must win over the
       // tab that happens to be active when the panel document loads.
+      captureSerial = 0;
       sourcePin = { id: 5, windowId: 2, url: "https://github.com/org/repo", pinnedAt: Date.now() };
       ({ frame, win, doc } = await openPanel()); await wait(220);
       assert(!doc.getElementById("includePageText").checked, "new session resets page text toggle");
-      assert(captureCalls.join(",") === "1,5" && queries === 1, "reopening captures the tab pinned by the toolbar click");
-      assert(doc.getElementById("sendCapture").disabled && !doc.querySelector(".destination-feedback.prepared"), "new panel session does not reuse selection or results");
+      assert(captureCalls.join(",") === "1,1,5" && queries === 1, "reopening captures the tab pinned by the toolbar click");
+      assert(!doc.getElementById("sendCapture").disabled && doc.getElementById("destination-10").checked && !doc.querySelector(".destination-feedback.prepared"), "new panel session resets results and applies default selection");
       win.eval("destinationUI").configurePreparation(async (_destination, capture) => {
         assert(capture.includeText === false && capture.text.includes("Revenue"), "default Add uses PNG mode while keeping collected text");
         return { prepared: true };
       });
-      doc.getElementById("destination-10").click();
       doc.getElementById("sendCapture").click(); await wait(60);
       assert(doc.querySelector(".destination-feedback.prepared"), "default Add completes with page text off");
       // Clicking the toolbar icon while the panel is open restarts the session on that tab.
       win.__onPanelMessage({ type: "captureSource:pinned" });
       await wait(500);
       win = frame.contentWindow; doc = frame.contentDocument;
-      assert(captureCalls.join(",") === "1,5,5", "the toolbar icon restarts the session on the clicked tab");
+      assert(captureCalls.join(",") === "1,1,5,5", "the toolbar icon restarts the session on the clicked tab");
       assert(doc.body.dataset.state === "success" && doc.getElementById("emptyState").hidden, "restarted session shows the new capture"); if (location.search.includes("preview")) {
         document.getElementById("result").textContent = "PASS " + JSON.stringify(checks); return;
       }

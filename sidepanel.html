@@ -47,8 +47,18 @@
           </svg>
           Screenshot
         </span>
-        <button id="zoomPreview" class="secondary-button zoom-button" type="button" aria-pressed="false"
-          aria-label="Show screenshot at actual size">100%</button>
+        <div class="preview-toolbar-actions">
+          <button id="recapturePage" class="secondary-button recapture-button" type="button"
+            title="Capture the source page again">
+            <svg class="inline-icon recapture-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2.5 5.25V4a1.5 1.5 0 0 1 1.5-1.5h1.25M10.75 2.5H12A1.5 1.5 0 0 1 13.5 4v1.25M13.5 10.75V12a1.5 1.5 0 0 1-1.5 1.5h-1.25M5.25 13.5H4A1.5 1.5 0 0 1 2.5 12v-1.25" />
+              <circle cx="8" cy="8" r="2.25" />
+            </svg>
+            <span>Recapture</span>
+          </button>
+          <button id="zoomPreview" class="secondary-button zoom-button" type="button" aria-pressed="false"
+            aria-label="Show screenshot at actual size">100%</button>
+        </div>
       </div>
       <div id="emptyState" class="empty-state">
         <div class="empty-glyph" aria-hidden="true">

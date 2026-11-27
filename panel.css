@@ -382,6 +382,17 @@ body[data-state="error"] #statusTitle {
   border-bottom: 1px solid var(--line);
 }
 
+.preview-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.recapture-button[data-capturing="true"] .recapture-icon {
+  animation: pulse 1.1s ease-in-out infinite;
+}
+
 .preview-label {
   display: inline-flex;
   align-items: center;

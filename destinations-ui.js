@@ -17,8 +17,54 @@ const destinationUI = (() => {
   let busy = false;
   let discovering = false;
   let generation = 0;
+  let defaultSelectionApplied = false;
+  let userTouchedSelection = false;
+  const busyListeners = new Set();
   // Only invoked by the explicit Add click, never by discovery or selection.
   let prepare = prepareInDestination;
+
+  function setBusy(next) {
+    if (busy === next) return;
+    busy = next;
+    for (const listener of busyListeners) listener(busy);
+  }
+
+  function isEligible(item) {
+    return (
+      !item.unavailable &&
+      !["prepared", "review", "unsupported"].includes(
+        statuses.get(item.id)?.state,
+      )
+    );
+  }
+
+  function applyDefaultSelection() {
+    if (defaultSelectionApplied || userTouchedSelection || selection.size > 0)
+      return;
+    const providers = AIProviders.all.filter((provider) =>
+      destinations.some((item) => item.providerId === provider.id),
+    );
+    if (!providers.length) return;
+    const orderedProviders = providers.some(
+      (provider) => provider.id === activeProvider,
+    )
+      ? [
+          providers.find((provider) => provider.id === activeProvider),
+          ...providers.filter((provider) => provider.id !== activeProvider),
+        ]
+      : providers;
+    for (const provider of orderedProviders) {
+      const first = destinations.find(
+        (item) => item.providerId === provider.id && isEligible(item),
+      );
+      if (first) {
+        activeProvider = provider.id;
+        selection.add(first.id);
+        defaultSelectionApplied = true;
+        return;
+      }
+    }
+  }
 
   function updateButton() {
     const count = selection.size;
@@ -79,6 +125,7 @@ const destinationUI = (() => {
             status?.state,
           );
         checkbox.addEventListener("change", () => {
+          userTouchedSelection = true;
           checkbox.checked ? selection.add(item.id) : selection.delete(item.id);
           renderTabs(providers);
           updateButton();
@@ -274,6 +321,7 @@ const destinationUI = (() => {
           .map((item) => [item.id, statuses.get(item.id)]),
       );
       destinations = found;
+      applyDefaultSelection();
       note.textContent = prepare
         ? ""
         : "Selection available. Preparation setup is pending.";
@@ -305,7 +353,7 @@ const destinationUI = (() => {
           statuses.get(item.id)?.state,
         ),
     );
-    busy = true;
+    setBusy(true);
     capture.includeText = includePageText.checked;
     includePageText.disabled = true;
     refreshButton.disabled = search.disabled = true;
@@ -355,7 +403,7 @@ const destinationUI = (() => {
         .filter(Boolean)
         .join(" · ");
     } finally {
-      busy = false;
+      setBusy(false);
       includePageText.disabled = false;
       refreshButton.disabled = search.disabled = false;
       render();
@@ -370,6 +418,8 @@ const destinationUI = (() => {
       includePageText.checked = false;
       selection.clear();
       statuses.clear();
+      defaultSelectionApplied = false;
+      userTouchedSelection = false;
       search.value = "";
       section.hidden = false;
       await refresh();
@@ -377,6 +427,7 @@ const destinationUI = (() => {
     suspend() {
       ++generation;
       discovering = false;
+      delete refreshButton.dataset.discovering;
       section.hidden = true;
     },
     resume() {
@@ -384,6 +435,10 @@ const destinationUI = (() => {
         section.hidden = false;
         void refresh();
       }
+    },
+    isBusy: () => busy,
+    onBusyChange(listener) {
+      busyListeners.add(listener);
     },
     configurePreparation(adapter) {
       prepare = adapter;

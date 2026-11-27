@@ -50,9 +50,12 @@ extension has no partially implemented provider entries.
 
 1. Open the webpage you want to capture and keep its tab active.
 2. Click the Page Relay toolbar icon to open the Side Panel. Capture starts
-   automatically; keep the source tab active until it finishes.
+   automatically; keep the source tab active until it finishes. Use
+   **Recapture** in the screenshot toolbar anytime to capture the source page
+   again without reopening the panel.
 3. Optionally turn on **Include page text**. It starts off for every new capture.
-4. Click **Refresh** and select one or more open AI conversations.
+4. The first available AI conversation is selected by default so **Add to 1 chat**
+   is ready immediately; adjust selections or click **Refresh** as needed.
 5. Click **Add to N chats**. Page Relay hands off the PNG (and TXT when
    **Include page text** is on) to each selected chat and immediately reports
    **Added** while the provider finishes uploading and processing the files.

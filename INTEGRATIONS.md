@@ -34,9 +34,12 @@ failure, never as a page Chrome protects. The same panel document remains open
 across tab switches and navigation; its screenshot, text, selections, Busy and
 preparation results remain in memory. Keep the source tab active and avoid
 resizing the panel until capture finishes; `captureVisibleTab` cannot capture a
-background tab. After capture, browse freely. Closing/recreating the panel starts
-a fresh session; captures are not saved to disk or restored across browser
-restarts. There are no recapture buttons.
+background tab. After capture, browse freely. Click **Recapture** in the screenshot toolbar to
+capture the pinned source tab again without reopening the panel (keep the source
+tab active; recapture replaces the screenshot/text, resets delivery statuses and
+duplicate protection, and re-applies default conversation selection). Closing/recreating
+the panel starts a fresh session; captures are not saved to disk or restored across
+browser restarts.
 
 ### Permissions
 
@@ -100,7 +103,11 @@ Explicit provider hosts allow preparation in open background chats. `tabs` is
 used to identify the source tab and classify protected pages.
 
 Provider tabs are derived from the latest matching open conversations, never
-from the whole registry. Refresh adds new providers, removes closed providers,
+from the whole registry. When the destination list is initially populated for a
+capture, the first eligible conversation is selected by default (skipping
+unavailable tabs) so **Add to 1 chat** is ready immediately; manual selection
+changes are respected across refreshes, and a fresh capture/recapture applies
+default selection again. Refresh adds new providers, removes closed providers,
 and selects a remaining provider if the active one disappears. Selections on
 unchanged accessible tabs survive refresh. With no matching chats, the panel
 shows **No AI chats open** and Refresh; tabs, destination list, search and Add
