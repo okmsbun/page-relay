@@ -210,7 +210,11 @@ test("switching tabs while a segment is captured never stitches the wrong tab an
   });
   await assert.rejects(
     run("captureFullPage({id: 1, windowId: 2})"),
-    /active tab changed/,
+    (error) =>
+      /active tab changed/.test(error.message) &&
+      error.interrupted === true &&
+      error.interruptionReason === "tab-switch" &&
+      error.expected === true,
   );
   assert.ok(state.restored && state.disconnected);
   assert.ok(
@@ -256,7 +260,11 @@ test("transient tab-strip lock recovery aborts safely if active tab changes befo
   });
   await assert.rejects(
     run("captureFullPage({id: 1, windowId: 2})"),
-    /Keep the captured tab active/,
+    (error) =>
+      /Keep the captured tab active/.test(error.message) &&
+      error.interrupted === true &&
+      error.interruptionReason === "tab-switch" &&
+      error.expected === true,
   );
   assert.equal(attempts, 1, "did not retry captureVisibleTab on wrong tab");
   assert.ok(state.restored && state.disconnected);
@@ -277,6 +285,9 @@ test("persistent Chrome tab-strip lock stops after bounded retries with structur
     run("captureFullPage({id: 1, windowId: 2})"),
     (error) => {
       assert.equal(error.transientTab, true);
+      assert.equal(error.interrupted, true);
+      assert.equal(error.interruptionReason, "tab-busy");
+      assert.equal(error.expected, true);
       assert.equal(error.diagnostic?.reason, "tab-strip-busy");
       assert.equal(error.diagnostic?.operation, "captureVisibleTab");
       assert.equal(error.diagnostic?.attempts, 5);
@@ -1020,4 +1031,53 @@ test("manual scroll interruption does not trigger layout retries in captureFullP
   );
   assert.equal(starts, 1, "manual scroll interruption fails fast without retrying");
   assert.ok(state.restored && state.disconnected);
+});
+
+test("tab switch, tab navigation, and tab closure interrupt cleanly without false positives on hash changes", async () => {
+  // Hash-only URL updates (e.g. scrollspy) do not interrupt capture.
+  const updatedListeners = [];
+  const activatedListeners = [];
+  const { run, state } = harness({
+    height: 1600,
+    onMessage(_state, message) {
+      if (message.type === "fullPageCapture:scroll") {
+        for (const fn of updatedListeners) {
+          fn(1, { url: "https://example.test/docs#section-2" });
+        }
+      }
+    },
+  });
+  run("chrome.tabs.onUpdated = { addListener: () => {}, removeListener: () => {} }");
+  // Directly exercise real listener wiring via chrome.tabs.onActivated.
+  const hook = harness({ height: 1600 });
+  const listeners = { activated: [], updated: [] };
+  hook.run("chrome.tabs.onActivated = { addListener(fn){ globalThis.__act = fn; }, removeListener(){ globalThis.__actRemoved = true; } }");
+  hook.run("chrome.tabs.onUpdated = { addListener(fn){ globalThis.__upd = fn; }, removeListener(){ globalThis.__updRemoved = true; } }");
+  // Hash-only update completes normally.
+  const hashRun = hook.run(`(async () => {
+    const p = captureFullPage({id: 1, windowId: 2, url: "https://example.test/page"});
+    await Promise.resolve();
+    globalThis.__upd?.(1, { url: "https://example.test/page#heading-2" });
+    return p;
+  })()`);
+  await hashRun;
+  assert.equal(hook.run("globalThis.__actRemoved && globalThis.__updRemoved"), true);
+
+  // Mid-capture onActivated switch interrupts cleanly with tab-switch and cleans up listeners.
+  const switchHook = harness({
+    height: 2400,
+    onMessage(_s, msg) {
+      if (msg.type === "fullPageCapture:scroll") {
+        switchHook.run("globalThis.__act?.({ tabId: 9, windowId: 2 })");
+      }
+    },
+  });
+  switchHook.run("chrome.tabs.onActivated = { addListener(fn){ globalThis.__act = fn; }, removeListener(){ globalThis.__actRemoved = true; } }");
+  await assert.rejects(
+    switchHook.run('captureFullPage({id: 1, windowId: 2, url: "https://example.test/page"})'),
+    (error) => error.interrupted === true && error.interruptionReason === "tab-switch" && error.expected === true,
+  );
+  assert.equal(switchHook.run("globalThis.__actRemoved"), true);
+  assert.ok(switchHook.state.restored && switchHook.state.disconnected);
+  void run; void state; void listeners; void activatedListeners;
 });

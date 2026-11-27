@@ -37,6 +37,9 @@ async function retryTabOperation(operation, action, beforeRetry) {
             "Chrome tabs are temporarily busy (for example while dragging a tab). Release the tab, then click Recapture.",
           );
           wrapped.transientTab = true;
+          wrapped.interrupted = true;
+          wrapped.interruptionReason = "tab-busy";
+          wrapped.expected = true;
           wrapped.diagnostic = {
             reason: "tab-strip-busy",
             operation,
@@ -177,6 +180,14 @@ function layoutChangedError(
   return error;
 }
 
+function captureInterruptedError(reason, message) {
+  const error = new Error(message);
+  error.interrupted = true;
+  error.interruptionReason = reason;
+  error.expected = true;
+  return error;
+}
+
 function checkCanvasSize(width, height) {
   if (
     height > MAX_CANVAS_SIDE ||
@@ -247,12 +258,33 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
     }
 
     async function requireActiveSourceTab() {
+      if (session.tabClosed) {
+        throw captureInterruptedError(
+          "tab-closed",
+          "The source tab was closed before the capture finished.",
+        );
+      }
+      if (session.tabNavigated) {
+        throw captureInterruptedError(
+          "tab-navigated",
+          "The page navigated or reloaded before the capture finished.",
+        );
+      }
+      if (session.tabSwitched) {
+        throw captureInterruptedError(
+          "tab-switch",
+          "The active tab changed during capture. Keep the source tab active until capture finishes.",
+        );
+      }
       const [activeTab] = await chrome.tabs.query({
         active: true,
         windowId: tab.windowId,
       });
       if (activeTab?.id !== tab.id)
-        throw new Error("Keep the captured tab active.");
+        throw captureInterruptedError(
+          "tab-switch",
+          "Keep the captured tab active.",
+        );
     }
     await requireActiveSourceTab();
     const dataUrl = await retryTabOperation(
@@ -265,9 +297,10 @@ async function capturePass(tab, initial, session = { captures: 0 }) {
       active: true,
       windowId: tab.windowId,
     });
-    if (activeAfterCapture?.id !== tab.id) {
+    if (session.tabSwitched || activeAfterCapture?.id !== tab.id) {
       // A Side Panel stays open on tab switches. Never stitch another tab's pixels.
-      throw new Error(
+      throw captureInterruptedError(
+        "tab-switch",
         "The active tab changed during capture. Keep the source tab active until capture finishes.",
       );
     }
@@ -458,14 +491,73 @@ async function captureFullPage(tab) {
     name: "fullPageCapture",
     frameId: 0,
   });
+  let tabSwitched = false;
+  let tabClosed = false;
+  let tabNavigated = false;
+  const onCaptureTabActivated = (activeInfo) => {
+    if (activeInfo.windowId === tab.windowId && activeInfo.tabId !== tab.id) {
+      tabSwitched = true;
+    }
+  };
+  const onCaptureTabRemoved = (removedTabId) => {
+    if (removedTabId === tab.id) tabClosed = true;
+  };
+  const stripHash = (rawUrl) => String(rawUrl || "").split("#")[0];
+  const initialBaseUrl = stripHash(tab.url);
+  const onCaptureTabUpdated = (updatedTabId, changeInfo) => {
+    if (updatedTabId !== tab.id) return;
+    if (changeInfo?.status === "loading") {
+      tabNavigated = true;
+      return;
+    }
+    if (changeInfo?.url && stripHash(changeInfo.url) !== initialBaseUrl) {
+      tabNavigated = true;
+    }
+  };
+  chrome.tabs.onActivated?.addListener?.(onCaptureTabActivated);
+  chrome.tabs.onRemoved?.addListener?.(onCaptureTabRemoved);
+  chrome.tabs.onUpdated?.addListener?.(onCaptureTabUpdated);
+  const checkTabState = () => {
+    if (tabClosed) {
+      throw captureInterruptedError(
+        "tab-closed",
+        "The source tab was closed before the capture finished.",
+      );
+    }
+    if (tabNavigated) {
+      throw captureInterruptedError(
+        "tab-navigated",
+        "The page navigated or reloaded before the capture finished.",
+      );
+    }
+    if (tabSwitched) {
+      throw captureInterruptedError(
+        "tab-switch",
+        "The active tab changed during capture. Keep the source tab active until capture finishes.",
+      );
+    }
+  };
   try {
     for (let attempt = 0; attempt <= MAX_LAYOUT_RETRIES; attempt++) {
-      const session = { captures: 0 };
+      const session = {
+        captures: 0,
+        get tabSwitched() {
+          return tabSwitched;
+        },
+        get tabClosed() {
+          return tabClosed;
+        },
+        get tabNavigated() {
+          return tabNavigated;
+        },
+      };
       const panels = [];
       try {
+        checkTabState();
         const initial = await sendToPage(tab.id, {
           type: "fullPageCapture:start",
         });
+        checkTabState();
         let pixels = 0;
         for (
           let index = 0;
@@ -505,6 +597,7 @@ async function captureFullPage(tab) {
               "The combined scrolling areas are too large to capture safely.",
             );
         }
+        checkTabState();
         document.getElementById("statusTitle").textContent =
           "Finishing capture…";
         const resultCanvas = initial.regions?.length
@@ -523,6 +616,26 @@ async function captureFullPage(tab) {
             resultCanvas.width = resultCanvas.height = 0;
         }
       } catch (error) {
+        if (!error?.interrupted) {
+          if (tabClosed) {
+            throw captureInterruptedError(
+              "tab-closed",
+              "The source tab was closed before the capture finished.",
+            );
+          }
+          if (tabNavigated) {
+            throw captureInterruptedError(
+              "tab-navigated",
+              "The page navigated or reloaded before the capture finished.",
+            );
+          }
+          if (tabSwitched) {
+            throw captureInterruptedError(
+              "tab-switch",
+              "The active tab changed during capture. Keep the source tab active until capture finishes.",
+            );
+          }
+        }
         if (
           error?.interrupted ||
           !error?.layoutChanged ||
@@ -559,8 +672,17 @@ async function captureFullPage(tab) {
       }
     }
   } finally {
+    chrome.tabs.onActivated?.removeListener?.(onCaptureTabActivated);
+    chrome.tabs.onRemoved?.removeListener?.(onCaptureTabRemoved);
+    chrome.tabs.onUpdated?.removeListener?.(onCaptureTabUpdated);
     try {
-      await sendToPage(tab.id, { type: "fullPageCapture:restore" });
+      if (!tabClosed) {
+        await sendToPage(tab.id, { type: "fullPageCapture:restore" }).catch(
+          (restoreError) => {
+            if (!tabNavigated) throw restoreError;
+          },
+        );
+      }
     } finally {
       port.disconnect();
     }
@@ -632,6 +754,14 @@ const UNSUPPORTED_PAGE_MESSAGE =
 const INTERRUPTED_PAGE_TITLE = "Capture interrupted";
 const INTERRUPTED_PAGE_MESSAGE =
   "The page was manually scrolled during capture. Please keep the page still while capturing to ensure a complete screenshot.";
+const INTERRUPTED_TAB_SWITCH_MESSAGE =
+  "You switched tabs before the capture finished. Keep the source tab active during capture.";
+const INTERRUPTED_TAB_BUSY_MESSAGE =
+  "Chrome tabs were busy during capture (for example while dragging a tab). Release the tab and click Recapture to try again.";
+const INTERRUPTED_TAB_NAVIGATED_MESSAGE =
+  "The page navigated or reloaded before the capture finished. Click Recapture once it finishes loading.";
+const INTERRUPTED_TAB_CLOSED_MESSAGE =
+  "The source tab was closed before the capture finished.";
 const PERMISSION_PAGE_TITLE = "Page access required";
 const PERMISSION_PAGE_MESSAGE =
   "Click the Page Relay icon in Chrome’s toolbar to capture this tab.";
@@ -698,10 +828,40 @@ function isManualScrollInterruption(error) {
   );
 }
 
+function isUserInterruption(error) {
+  if (error?.interrupted) return true;
+  const message = String(error?.message ?? error ?? "");
+  return /active tab changed|keep the captured tab active|capture was cancelled/i.test(
+    message,
+  );
+}
+
+function interruptionMessage(error) {
+  switch (error?.interruptionReason) {
+    case "manual-scroll":
+      return INTERRUPTED_PAGE_MESSAGE;
+    case "tab-switch":
+      return INTERRUPTED_TAB_SWITCH_MESSAGE;
+    case "tab-busy":
+      return INTERRUPTED_TAB_BUSY_MESSAGE;
+    case "tab-navigated":
+      return INTERRUPTED_TAB_NAVIGATED_MESSAGE;
+    case "tab-closed":
+      return INTERRUPTED_TAB_CLOSED_MESSAGE;
+    default: {
+      const message = String(error?.message ?? error ?? "");
+      if (/active tab changed|keep the captured tab active/i.test(message)) {
+        return INTERRUPTED_TAB_SWITCH_MESSAGE;
+      }
+      return INTERRUPTED_PAGE_MESSAGE;
+    }
+  }
+}
+
 function isExpectedCaptureError(error) {
   if (
     error?.expected ||
-    isManualScrollInterruption(error) ||
+    isUserInterruption(error) ||
     isProtectedError(error) ||
     isUnsupportedError(error) ||
     isPermissionError(error)
@@ -715,7 +875,7 @@ function isExpectedCaptureError(error) {
 
 function friendlyError(error) {
   const message = String(error?.message ?? error ?? "");
-  if (isManualScrollInterruption(error)) return INTERRUPTED_PAGE_MESSAGE;
+  if (isUserInterruption(error)) return interruptionMessage(error);
   if (isProtectedError(error)) return RESTRICTED_PAGE_MESSAGE;
   if (isUnsupportedError(error)) return UNSUPPORTED_PAGE_MESSAGE;
   if (isPermissionError(error))
@@ -1209,18 +1369,32 @@ async function runPanelCapture(sourceTab, { mode = "source" } = {}) {
         console.error("[Page Relay] Capture failed:", error);
       }
     }
-    const interrupted = isManualScrollInterruption(error);
+    const interrupted = isUserInterruption(error);
     const restricted = isProtectedError(error) || isUnsupportedError(error);
     const permissionDenied = !restricted && isPermissionError(error);
     if (interrupted) {
+      const tabClosed = error?.interruptionReason === "tab-closed";
+      // Refresh the currently active tab snapshot so Capture this tab reflects
+      // whichever tab the user switched to without switching them back.
+      if (
+        (error?.interruptionReason === "tab-switch" || tabClosed) &&
+        Number.isInteger(panelWindowId) &&
+        chrome.tabs?.query
+      ) {
+        const [activeNow] = await chrome.tabs
+          .query({ active: true, windowId: panelWindowId })
+          .catch(() => []);
+        const snapshot = normalizeTabSnapshot(activeNow);
+        if (snapshot) currentActiveTab = snapshot;
+      }
       if (!capturedPage) {
-        canRetrySource = Boolean(captureSourceTab);
+        canRetrySource = !tabClosed && Boolean(captureSourceTab);
         if (previewCard) previewCard.hidden = true;
       }
       setStatus(
         "interrupted",
         INTERRUPTED_PAGE_TITLE,
-        INTERRUPTED_PAGE_MESSAGE,
+        interruptionMessage(error),
         capturedPage ? PERMISSION_PRESERVED_HINT : "",
       );
     } else if (restricted) {

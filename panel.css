@@ -572,6 +572,19 @@ body.has-capture .status-actions {
   cursor: default;
 }
 
+#statusRecapture:not([hidden]) ~ #statusCaptureTab {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
+  box-shadow: var(--shadow-xs);
+}
+
+#statusRecapture:not([hidden]) ~ #statusCaptureTab:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
 body[data-state="error"] .capture-status {
   background: var(--error-bg);
   border-color: var(--error-border);

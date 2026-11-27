@@ -50,10 +50,15 @@ text, and delivery states, and automatically continues capture in-place the
 moment you click the **Page Relay** toolbar icon—without closing or reloading
 the Side Panel. Switching from a **Restricted page** or **Unsupported page** to
 a normal webpage also enables **Capture this tab** directly inside the open
-panel. Manual user scrolling during capture is detected
-via passive trusted input listeners and transitions cleanly to a calm
-**Capture interrupted** state with a prominent **Recapture** button, preserving
-any previous valid capture. Transient page layout shifts trigger up to two clean,
+panel. Expected user-triggered capture interruptions—including manual scrolling
+(detected via passive trusted input listeners), switching away from the source
+tab mid-capture, persistent tab-strip drags, or navigating/closing the source
+tab—safely stop capture without stitching pixels from the wrong tab or yanking
+the user back, and transition cleanly to the calm **Capture interrupted** state
+with a prominent **Recapture** button while preserving any previous valid
+capture, active-tab context, and **Capture this tab** option. Expected
+interruptions are never logged as extension errors; genuine unrecovered capture
+failures continue to surface structured `console.error` diagnostics. Transient page layout shifts trigger up to two clean,
 bounded recovery retries after settling. Closing/recreating the panel starts a
 fresh session; captures are not saved to disk or restored across browser restarts.
 

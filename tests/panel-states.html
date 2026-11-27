@@ -68,8 +68,21 @@
       win.console = { ...win.console, error: (...args) => consoleErrors.push(args) };
       win.chrome = {
         tabs: {
-          onActivated: { addListener: (fn) => tabListeners.activated.push(fn) },
-          onUpdated: { addListener: (fn) => tabListeners.updated.push(fn) },
+          onActivated: {
+            addListener: (fn) => tabListeners.activated.push(fn),
+            removeListener: (fn) => {
+              const idx = tabListeners.activated.indexOf(fn);
+              if (idx >= 0) tabListeners.activated.splice(idx, 1);
+            },
+          },
+          onUpdated: {
+            addListener: (fn) => tabListeners.updated.push(fn),
+            removeListener: (fn) => {
+              const idx = tabListeners.updated.indexOf(fn);
+              if (idx >= 0) tabListeners.updated.splice(idx, 1);
+            },
+          },
+          onRemoved: { addListener: () => {}, removeListener: () => {} },
           query: async (options) => {
             if (options.url) { if (discoveryFails) throw new Error("Test discovery error"); return chats; }
             if (sourceActive) {
@@ -109,6 +122,8 @@
         win.showTextStats({ characters: 400, estimatedTokens: 100 });
         await wait(150);
         if (fail === "interrupted") throw Object.assign(new Error("The page was manually scrolled during capture. Please keep the page still while capturing to ensure a complete screenshot."), { interrupted: true, interruptionReason: "manual-scroll", expected: true });
+        if (fail === "tab-switch") throw Object.assign(new Error("Keep the captured tab active."), { interrupted: true, interruptionReason: "tab-switch", expected: true });
+        if (fail === "tab-busy") throw Object.assign(new Error("Chrome tabs are temporarily busy."), { transientTab: true, interrupted: true, interruptionReason: "tab-busy", expected: true });
         if (fail === "layout") throw Object.assign(new Error("The page layout changed during capture. Wait for it to settle and retry."), { layoutChanged: true, diagnostic: { reason: "geometry-changed", diffs: ["viewportHeight: 800 -> 720"] } });
         if (fail === "unsupported") throw Object.assign(new Error("Full-page capture is unavailable on this type of page."), { unsupportedPage: true, expected: true });
         if (fail === "permission") throw new Error("Cannot access contents of the page. Extension manifest must request permission to access the respective host.");
@@ -390,6 +405,25 @@
       assert(doc.getElementById("destination-10").disabled && doc.getElementById("destination-11").disabled, "both chats are disabled once screenshot and text are added");
       assert([...doc.querySelectorAll(".destination-feedback.prepared")].filter((n) => n.textContent === "Screenshot and text added").length === 2, "both chats display Screenshot and text added");
 
+      // Switching tabs mid-Recapture interrupts calmly without switching back, preserving previous capture, delivery states, and active tab Capture this tab action!
+      const activatedBeforeTabSwitch = activatedTabs.length;
+      win.__emitTabActivated(1, 2); await wait(20);
+      fail = "tab-switch";
+      doc.getElementById("recapturePage").click();
+      await wait(160);
+      win.__emitTabActivated(1, 2);
+      await wait(240);
+      assert(doc.body.dataset.state === "interrupted", "tab switch during recapture shows calm interrupted state instead of red error");
+      assert(doc.getElementById("statusTitle").textContent === "Capture interrupted", "tab switch interruption uses Capture interrupted heading");
+      assert(doc.getElementById("statusDetail").textContent === "You switched tabs before the capture finished. Keep the source tab active during capture.", "tab switch interruption explains switching tabs clearly");
+      assert(doc.getElementById("statusHint").textContent === "Your previous capture is preserved.", "tab switch interruption reassures user previous capture is preserved");
+      assert(doc.getElementById("preview").src === pngUpdated && doc.getElementById("sourcePage").textContent.includes("docs.example.com") && !doc.getElementById("destinations").hidden, "tab switch interruption preserves previous screenshot, source, and destinations");
+      assert(doc.querySelector(".destination-feedback.prepared") && !doc.getElementById("recapturePage").disabled, "tab switch interruption preserves delivery states and keeps Recapture accessible");
+      assert(!doc.getElementById("activeTabRow").hidden && doc.getElementById("activeTabLabel").textContent.includes("github.com") && !doc.getElementById("captureActiveTab").hidden, "tab switch interruption preserves active tab info and Capture this tab");
+      assert(activatedTabs.length === activatedBeforeTabSwitch + 1, "tab switch interruption never automatically switches the user back to the source tab after interruption");
+      assert(consoleErrors.length === 0, "tab switch interruption does not pollute console.error");
+      fail = false;
+
       // Subsequent Recapture operates on newly established source (tab 7), even from another tab!
       sourceId = 7;
       activeTabInWindow = 1;
@@ -464,6 +498,19 @@
       fail = false;
       doc.getElementById("statusRecapture").click(); await wait(220);
       assert(doc.body.dataset.state === "success" && !doc.getElementById("destinations").hidden, "clicking inline Recapture recovers cleanly from interrupted state");
+
+      // Initial capture interrupted by switching tabs shows calm interrupted state with Recapture + Capture this tab for the new tab!
+      sourcePin = { id: 1, windowId: 2, url: "https://github.com/org/repo", pinnedAt: Date.now() };
+      fail = "tab-switch"; sourceId = 1; activeTabInWindow = 7; sourceActive = false;
+      frame.remove();
+      ({ frame, win, doc } = await openPanel()); await wait(220);
+      assert(doc.body.dataset.state === "interrupted", "initial tab switch uses calm interrupted state instead of red error");
+      assert(doc.getElementById("statusTitle").textContent === "Capture interrupted", "initial tab switch shows Capture interrupted heading");
+      assert(doc.getElementById("statusDetail").textContent === "You switched tabs before the capture finished. Keep the source tab active during capture.", "initial tab switch explains switching tabs");
+      assert(doc.querySelector(".preview-card").hidden, "initial tab switch hides failed preview placeholder");
+      assert(!doc.getElementById("statusRecapture").hidden && !doc.getElementById("statusCaptureTab").hidden, "initial tab switch offers both Recapture and Capture this tab");
+      assert(consoleErrors.length === 0, "initial tab switch interruption does not log console.error");
+      fail = false;
 
       // Retryable initial capture failure keeps Recapture accessible, reports diagnostics, and succeeds on retry.
       sourcePin = null; fail = "layout"; sourceId = 1; activeTabInWindow = 1; sourceActive = true;

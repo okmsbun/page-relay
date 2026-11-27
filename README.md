@@ -56,9 +56,11 @@ extension has no partially implemented provider entries.
 
 1. Open the webpage you want to capture and keep its tab active.
 2. Click the Page Relay toolbar icon to open the Side Panel. Capture starts
-   automatically; keep the source tab active until it finishes. Use
-   **Recapture** in the header anytime to return to the source tab and capture
-   it again without reopening the panel.
+   automatically; keep the source tab active and avoid scrolling until it
+   finishes (if you switch tabs or scroll manually mid-capture, Page Relay
+   pauses safely in a calm **Capture interrupted** state while preserving any
+   previous capture). Use **Recapture** in the header anytime to return to the
+   source tab and capture it again without reopening the panel.
 3. Optionally turn on **Include page text**. It starts off for every new capture.
 4. The first available AI conversation is selected by default so **Add to 1 chat**
    is ready immediately; adjust selections or click **Refresh** as needed.
