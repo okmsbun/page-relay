@@ -24,11 +24,24 @@
 
 ## GitHub Actions CI and Release Workflows
 
-Page Relay uses three lightweight, dependency-free GitHub Actions workflows on `ubuntu-latest` with Node.js 24 LTS:
+Page Relay uses four lightweight, dependency-free GitHub Actions workflows on `ubuntu-latest` with Node.js 24 LTS:
 
 - `.github/workflows/quality.yml` — Checks JavaScript syntax (`node --check`), shell syntax (`bash -n`), `manifest.json` schema/permissions/icons, and verifies every runtime file referenced by `manifest.json`, `sidepanel.html`, and `panel.js` exists and is packaged by `scripts/package.sh`.
-- `.github/workflows/test.yml` — Runs unit tests (`node --test tests/*.test.cjs`), headless Chrome browser fixtures (`node tests/browser-check.cjs`), and native pointer/keyboard provider control tests (`node tests/provider-controls.cjs`).
-- `.github/workflows/release.yml` — Triggered manually (`workflow_dispatch`) or on version tags (`v*`). Runs the full quality and test validation before building and validating `pagerelay-<version>.zip`, generating a `.sha256` checksum, uploading release artifacts, and (on `v*` tags) attaching them to a GitHub Release. It does **not** automatically publish to the Chrome Web Store.
+- `.github/workflows/test.yml` — Runs unit tests (`node --test tests/*.test.cjs`), headless Chrome browser fixtures (`node tests/browser-check.cjs`), and native pointer/keyboard provider control tests (`node tests/provider-controls.cjs`). Includes a conditional, allowlist-only disk cleanup step on GitHub-hosted runners when free root disk space drops below 10 GiB (preserving Chrome, Node.js, Git, `gh`, `zip`/`unzip`, and `dpkg` state).
+- `.github/workflows/only-develop-to-main.yml` — Enforces that pull requests targeting `main` originate only from the `develop` branch within this repository (rejecting other branches and fork branches named `develop`). Pull requests targeting `develop` are unaffected.
+- `.github/workflows/release.yml` — Triggered manually (`workflow_dispatch`) or on version tags (`v*`). On `v*` tags, verifies the tag matches `manifest.json` and points to a commit reachable from `main`, runs full quality and headless Chrome validation before building and validating `pagerelay-<version>.zip`, generating a `.sha256` checksum, uploading release artifacts, and (on `v*` tags) attaching them to a GitHub Release. It does **not** automatically publish to the Chrome Web Store.
+
+### Required GitHub Branch Protection / Ruleset Configuration for `main`
+
+To enforce the `develop -> main` release flow on GitHub:
+
+1. Protect the `main` branch via **Settings → Branches** (or **Repository Rulesets**).
+2. Require a pull request before merging to `main` and restrict direct pushes and force pushes.
+3. Require status checks to pass before merging, selecting:
+   - `quality` (from `Quality`)
+   - `test` (from `Tests`)
+   - `check-source-branch` (from `only-develop-to-main`)
+4. Only create and push `v*` release tags from validated commits on `main` after the `develop -> main` pull request is merged.
 
 ## Packaging
 

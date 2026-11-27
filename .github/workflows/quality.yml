@@ -16,9 +16,12 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js 24 LTS
         uses: actions/setup-node@v4
@@ -27,6 +30,7 @@ jobs:
 
       - name: Check JavaScript syntax
         run: |
+          set -euo pipefail
           for file in *.js tests/*.js tests/*.cjs; do
             node --check "$file"
           done

@@ -1,0 +1,44 @@
+name: only-develop-to-main
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: only-develop-to-main-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-source-branch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify PR targets main only from this repository's develop branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          echo "Base repository: ${BASE_REPO}"
+          echo "Base branch:     ${BASE_REF}"
+          echo "Head repository: ${HEAD_REPO:-<none>}"
+          echo "Head branch:     ${HEAD_REF}"
+
+          if [[ "${BASE_REF}" == "main" ]]; then
+            if [[ "${HEAD_REF}" != "develop" ]]; then
+              echo "::error::Only pull requests from 'develop' to 'main' are allowed (got '${HEAD_REF}')."
+              exit 1
+            fi
+            if [[ -z "${HEAD_REPO}" || "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+              echo "::error::Pull requests targeting 'main' must originate from '${BASE_REPO}' (got '${HEAD_REPO:-<none>}'). Fork branches named 'develop' are not allowed."
+              exit 1
+            fi
+          fi
+
+          echo "PASS: pull request targets 'main' from '${BASE_REPO}:${HEAD_REF}'."

@@ -16,9 +16,45 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
+      - name: Free disk space (conditional, safe allowlist)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          df -h /
+          avail_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
+          min_free_kib=$((10 * 1024 * 1024)) # 10 GiB
+          if [ "$avail_kib" -ge "$min_free_kib" ]; then
+            echo "Sufficient free disk space (${avail_kib} KiB >= ${min_free_kib} KiB); skipping cleanup."
+            exit 0
+          fi
+
+          # Remove only large, standalone (non-dpkg-managed, non-symlink) preinstalled toolchains.
+          # Chrome/Chromium, Node.js, Git, gh, Bash, zip/unzip, and the dpkg database stay untouched.
+          for dir in \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup \
+            /usr/share/swift \
+            /usr/share/miniconda \
+            /usr/local/julia \
+            /usr/local/aws-cli
+          do
+            [ -L "$dir" ] && continue
+            [ -d "$dir" ] || continue
+            dpkg -S "$dir" >/dev/null 2>&1 && continue
+            du -sh "$dir" || true
+            sudo rm -rf -- "$dir"
+          done
+
+          sudo apt-get clean
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js 24 LTS
         uses: actions/setup-node@v4
@@ -31,11 +67,13 @@ jobs:
       - name: Locate Google Chrome
         id: chrome
         run: |
+          set -euo pipefail
           chrome_bin="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium || true)"
           if [[ -z "$chrome_bin" ]]; then
             echo "Google Chrome binary not found on runner" >&2
             exit 1
           fi
+          echo "Using Chrome binary: $chrome_bin"
           "$chrome_bin" --version
           echo "bin=$chrome_bin" >> "$GITHUB_OUTPUT"
 

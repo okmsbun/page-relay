@@ -25,7 +25,7 @@ First major stable release of Page Relay.
 ### UI, Quality & Release Engineering
 
 - **Modern Side Panel redesign:** Refreshed visual hierarchy, typography, spacing, light/dark mode tokens, narrow-panel responsiveness (`300px+`), macOS-style page text toggle, segmented provider tabs, and expandable feedback badges.
-- **CI & release automation:** Added dependency-free GitHub Actions workflows for code quality (`quality.yml`), automated unit/browser/native-control testing (`test.yml`), and validated Chrome Web Store ZIP packaging (`release.yml`).
+- **CI & release automation:** Added dependency-free GitHub Actions workflows for code quality (`quality.yml`), automated unit/browser/native-control testing (`test.yml`), branch-flow enforcement (`only-develop-to-main.yml`), and validated Chrome Web Store ZIP packaging (`release.yml`).
 
 ## [0.1.3]
 

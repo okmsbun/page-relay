@@ -16,20 +16,58 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.meta.outputs.version }}
     steps:
+      - name: Free disk space (conditional, safe allowlist)
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          df -h /
+          avail_kib="$(df -Pk / | awk 'NR==2 {print $4}')"
+          min_free_kib=$((10 * 1024 * 1024)) # 10 GiB
+          if [ "$avail_kib" -ge "$min_free_kib" ]; then
+            echo "Sufficient free disk space (${avail_kib} KiB >= ${min_free_kib} KiB); skipping cleanup."
+            exit 0
+          fi
+
+          # Remove only large, standalone (non-dpkg-managed, non-symlink) preinstalled toolchains.
+          # Chrome/Chromium, Node.js, Git, gh, Bash, zip/unzip, and the dpkg database stay untouched.
+          for dir in \
+            /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/.ghcup \
+            /usr/share/swift \
+            /usr/share/miniconda \
+            /usr/local/julia \
+            /usr/local/aws-cli
+          do
+            [ -L "$dir" ] && continue
+            [ -d "$dir" ] || continue
+            dpkg -S "$dir" >/dev/null 2>&1 && continue
+            du -sh "$dir" || true
+            sudo rm -rf -- "$dir"
+          done
+
+          sudo apt-get clean
+          df -h /
+
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Node.js 24 LTS
         uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      - name: Verify version and tag alignment
+      - name: Verify version, tag alignment, and main branch ancestry
         id: meta
         run: |
+          set -euo pipefail
           version=$(node -p 'require("./manifest.json").version')
           if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; then
             echo "Invalid manifest.json version: $version" >&2
@@ -42,10 +80,19 @@ jobs:
               echo "Tag $GITHUB_REF_NAME does not match manifest.json version $version (expected $expected)" >&2
               exit 1
             fi
+            if ! git rev-parse --verify origin/main >/dev/null 2>&1; then
+              echo "Unable to resolve origin/main to verify release tag ancestry" >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor HEAD origin/main; then
+              echo "Release tag $GITHUB_REF_NAME must point to a commit reachable from 'main'" >&2
+              exit 1
+            fi
           fi
 
       - name: Check syntax, manifest, and runtime file integrity
         run: |
+          set -euo pipefail
           for file in *.js tests/*.js tests/*.cjs; do
             node --check "$file"
           done
@@ -110,26 +157,33 @@ jobs:
       - name: Locate Google Chrome
         id: chrome
         run: |
+          set -euo pipefail
           chrome_bin="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium || true)"
           if [[ -z "$chrome_bin" ]]; then
             echo "Google Chrome binary not found on runner" >&2
             exit 1
           fi
+          echo "Using Chrome binary: $chrome_bin"
+          "$chrome_bin" --version
           echo "bin=$chrome_bin" >> "$GITHUB_OUTPUT"
 
       - name: Run browser and native control tests
         env:
           CHROME_BIN: ${{ steps.chrome.outputs.bin }}
         run: |
+          set -euo pipefail
           node tests/browser-check.cjs
           node tests/provider-controls.cjs
 
   package:
     needs: validate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js 24 LTS
         uses: actions/setup-node@v4
@@ -140,6 +194,7 @@ jobs:
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
+          set -euo pipefail
           zip_name=$(bash scripts/package.sh)
           expected="pagerelay-$VERSION.zip"
           if [[ "$zip_name" != "$expected" ]]; then
@@ -222,6 +277,7 @@ jobs:
     needs: [validate, package]
     if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
