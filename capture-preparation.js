@@ -464,9 +464,9 @@ async function prepareFilesInComposer(payload) {
         openedToggle.getAttribute("aria-expanded") !== "true" &&
         !geminiMenuOverlayOpen());
     if (menuClosed()) return;
-    const deadline = Math.min(payload.deadline, Date.now() + 250);
+    const deadline = Math.min(payload.deadline, Date.now() + 120);
     while (Date.now() < deadline && !menuClosed()) {
-      await wait(25);
+      await wait(20);
     }
   }
   function upload(input, files, kinds) {

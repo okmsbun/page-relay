@@ -112,7 +112,7 @@
         if (mode === "extra-attachment") tile("user-added-during-upload.pdf");
         if (mode === "edit") editor().textContent = "User edited during preparation";
         if (mode === "upload-error") { const error = document.createElement("div"); error.setAttribute("role", "alert"); error.textContent = "Upload failed"; container.append(error); }
-        if (mode === "late-upload-error") setTimeout(() => { const error = document.createElement("div"); error.setAttribute("role", "alert"); error.textContent = "Late provider upload error"; container.append(error); }, 200);
+        if (mode === "late-upload-error") setTimeout(() => { const error = document.createElement("div"); error.setAttribute("role", "alert"); error.textContent = "Late provider upload error"; container.append(error); }, 2000);
         if (mode === "progress") { const progress = document.createElement("div"); progress.setAttribute("role", "progressbar"); progress.textContent = "Uploading"; container.append(progress); }
       });
     }
