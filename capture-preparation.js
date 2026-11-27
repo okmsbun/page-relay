@@ -454,17 +454,18 @@ async function prepareFilesInComposer(payload) {
   }
   async function awaitGeminiHandoff(input, openedToggle) {
     // Allow Gemini's Angular change handler to consume the selected files and
-    // auto-close its upload menu before another input change or tab restore runs.
+    // auto-close its upload menu before another input change, menu cleanup, or
+    // tab restore runs. Do not short-circuit on input.files.length === 0 because
+    // Gemini clears input.value synchronously before Angular finishes handoff.
     // Never waits for upload completion, preview rendering, or the Send button.
-    const consumed = () =>
+    const menuClosed = () =>
       !input.isConnected ||
-      input.files.length === 0 ||
       (openedToggle?.isConnected &&
         openedToggle.getAttribute("aria-expanded") !== "true" &&
         !geminiMenuOverlayOpen());
-    if (consumed()) return;
-    const deadline = Math.min(payload.deadline, Date.now() + 300);
-    while (Date.now() < deadline && !consumed()) {
+    if (menuClosed()) return;
+    const deadline = Math.min(payload.deadline, Date.now() + 250);
+    while (Date.now() < deadline && !menuClosed()) {
       await wait(25);
     }
   }
